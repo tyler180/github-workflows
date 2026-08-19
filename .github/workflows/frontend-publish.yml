@@ -1,0 +1,64 @@
+name: Frontend Publish
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    name: Publish container
+    runs-on: ubuntu-latest
+
+    env:
+      IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+      NEXT_PUBLIC_OIDC_ISSUER: ${{ vars.NEXT_PUBLIC_OIDC_ISSUER }}
+      NEXT_PUBLIC_OIDC_CLIENT_ID: ${{ vars.NEXT_PUBLIC_OIDC_CLIENT_ID }}
+      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+      NEXT_PUBLIC_LEAGUE_SEASON: ${{ vars.NEXT_PUBLIC_LEAGUE_SEASON }}
+      NEXT_PUBLIC_LEAGUE_ID: ${{ vars.NEXT_PUBLIC_LEAGUE_ID }}
+      NEXT_PUBLIC_FRANCHISE_ID: ${{ vars.NEXT_PUBLIC_FRANCHISE_ID }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_OIDC_ISSUER=${{ env.NEXT_PUBLIC_OIDC_ISSUER }}
+            NEXT_PUBLIC_OIDC_CLIENT_ID=${{ env.NEXT_PUBLIC_OIDC_CLIENT_ID }}
+            NEXT_PUBLIC_API_BASE_URL=${{ env.NEXT_PUBLIC_API_BASE_URL }}
+            NEXT_PUBLIC_LEAGUE_SEASON=${{ env.NEXT_PUBLIC_LEAGUE_SEASON }}
+            NEXT_PUBLIC_LEAGUE_ID=${{ env.NEXT_PUBLIC_LEAGUE_ID }}
+            NEXT_PUBLIC_FRANCHISE_ID=${{ env.NEXT_PUBLIC_FRANCHISE_ID }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

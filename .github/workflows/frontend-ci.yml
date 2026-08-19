@@ -1,0 +1,39 @@
+name: Frontend CI
+
+on:
+  workflow_call:
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+
+    env:
+      NEXT_PUBLIC_OIDC_ISSUER: ${{ vars.NEXT_PUBLIC_OIDC_ISSUER }}
+      NEXT_PUBLIC_OIDC_CLIENT_ID: ${{ vars.NEXT_PUBLIC_OIDC_CLIENT_ID }}
+      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+      NEXT_PUBLIC_LEAGUE_SEASON: ${{ vars.NEXT_PUBLIC_LEAGUE_SEASON }}
+      NEXT_PUBLIC_LEAGUE_ID: ${{ vars.NEXT_PUBLIC_LEAGUE_ID }}
+      NEXT_PUBLIC_FRANCHISE_ID: ${{ vars.NEXT_PUBLIC_FRANCHISE_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build

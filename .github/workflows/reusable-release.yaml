@@ -9,9 +9,17 @@ on:
         required: true
         type: string
       release-tag:
-        description: Existing vMAJOR.MINOR.PATCH tag on the default branch history
-        required: true
+        description: Existing vMAJOR.MINOR.PATCH tag; optional for automatic patch releases
+        default: ""
         type: string
+      release-ref:
+        description: Exact tested source commit (automatic) or existing release tag
+        type: string
+        default: ""
+      automatic-patch:
+        description: Select the next patch version for the latest default-branch commit
+        type: boolean
+        default: false
       manifest-directory:
         type: string
         default: deploy
@@ -31,7 +39,7 @@ on:
       gitops-app-private-key:
         required: true
 permissions:
-  contents: read
+  contents: write
   packages: write
 concurrency:
   group: gitops-${{ inputs.gitops-repository }}-${{ inputs.app-name }}
@@ -44,7 +52,7 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release-tag }}
+          ref: ${{ inputs.release-ref || inputs.release-tag || github.sha }}
           fetch-depth: 0
           path: source
           persist-credentials: false
@@ -53,6 +61,7 @@ jobs:
         working-directory: source
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
+          AUTOMATIC_PATCH: ${{ inputs.automatic-patch }}
           APP_NAME: ${{ inputs.app-name }}
           APP_NAMESPACE: ${{ inputs.namespace }}
           MANIFEST_DIRECTORY: ${{ inputs.manifest-directory }}
@@ -62,13 +71,50 @@ jobs:
           GITOPS_BRANCH: ${{ inputs.gitops-branch }}
         run: |
           python3 - <<'PY'
-          import os, re
+          """Select a stable patch release for a tested default-branch commit."""
+          import re
+          import subprocess
+
+          PATTERN = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+          def select_version(tags, exact_tags):
+              versions = {tag: tuple(map(int, PATTERN.fullmatch(tag).groups()))
+                          for tag in tags if PATTERN.fullmatch(tag)}
+              exact = [tag for tag in exact_tags if tag in versions]
+              if exact:
+                  return max(exact, key=versions.get), False
+              major, minor, patch = max(versions.values(), default=(0, 1, -1))
+              return f"v{major}.{minor}.{patch + 1}", True
+
+
+          def resolve(tag, automatic, default_branch):
+              sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+              default_sha = subprocess.check_output(
+                  ['git', 'rev-parse', f'refs/remotes/origin/{default_branch}'], text=True).strip()
+              if automatic:
+                  if sha != default_sha:
+                      return {'skip': 'true'}
+                  tags = subprocess.check_output(['git', 'tag', '--list'], text=True).splitlines()
+                  exact = subprocess.check_output(['git', 'tag', '--points-at', 'HEAD'], text=True).splitlines()
+                  tag, create = select_version(tags, exact)
+              else:
+                  if not PATTERN.fullmatch(tag):
+                      raise ValueError('Use an existing vMAJOR.MINOR.PATCH release tag')
+                  tagged_sha = subprocess.check_output(
+                      ['git', 'rev-parse', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+                  if tagged_sha != sha:
+                      raise ValueError('Checked-out source does not match the release tag')
+                  subprocess.run(['git', 'merge-base', '--is-ancestor', 'HEAD',
+                                  f'refs/remotes/origin/{default_branch}'], check=True)
+                  create = False
+              return {'skip': 'false', 'tag': tag, 'sha': sha, 'create-tag': str(create).lower()}
+          # Workflow inputs
+          import os
           from pathlib import Path
           for key in ('APP_NAME', 'APP_NAMESPACE'):
               if not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', os.environ[key]):
                   raise SystemExit('Invalid app name or namespace')
-          if not re.fullmatch(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', os.environ['RELEASE_TAG']):
-              raise SystemExit('Use an existing vMAJOR.MINOR.PATCH release tag')
           if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', os.environ['GITOPS_REPOSITORY']):
               raise SystemExit('Invalid GitOps repository')
           directory = Path(os.environ['MANIFEST_DIRECTORY'])
@@ -76,39 +122,68 @@ jobs:
               raise SystemExit('Manifest directory must be inside the source checkout')
           if not (directory / 'kustomization.yaml').is_file():
               raise SystemExit('Manifest directory lacks kustomization.yaml')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write('image=ghcr.io/' + os.environ['SOURCE_REPOSITORY'].lower() + '\n')
-              f.write('owner=' + os.environ['GITOPS_REPOSITORY'].split('/')[0] + '\n')
-              f.write('repo=' + os.environ['GITOPS_REPOSITORY'].split('/')[1] + '\n')
+          subprocess.run(['git', 'check-ref-format', 'refs/heads/' + os.environ['GITOPS_BRANCH']], check=True)
+          selected = resolve(os.environ['RELEASE_TAG'], os.environ['AUTOMATIC_PATCH'] == 'true', os.environ['DEFAULT_BRANCH'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in selected.items():
+                  output.write(key + '=' + value + '\n')
+              output.write('image=ghcr.io/' + os.environ['SOURCE_REPOSITORY'].lower() + '\n')
+              output.write('owner=' + os.environ['GITOPS_REPOSITORY'].split('/')[0] + '\n')
+              output.write('repo=' + os.environ['GITOPS_REPOSITORY'].split('/')[1] + '\n')
           PY
-          git check-ref-format "refs/heads/$GITOPS_BRANCH"
-          git rev-parse --verify "refs/tags/$RELEASE_TAG"
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Set up image builder
+      - if: steps.release.outputs.skip != 'true'
+        name: Set up image builder
         uses: docker/setup-buildx-action@v3
-      - name: Sign in to GHCR
+      - if: steps.release.outputs.skip != 'true'
+        name: Sign in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish release image
+      - if: steps.release.outputs.skip != 'true'
+        name: Reuse an already-published version
+        id: published
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}:${{ steps.release.outputs.tag }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}' >"$RUNNER_TEMP/digest" 2>"$RUNNER_TEMP/image-error"; then
+            DIGEST=$(cat "$RUNNER_TEMP/digest")
+            [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'Invalid registry digest'; exit 1; }
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          elif grep -Eq 'not found|manifest unknown|404' "$RUNNER_TEMP/image-error"; then
+            echo 'Version has not been published yet.'
+          else
+            cat "$RUNNER_TEMP/image-error" >&2
+            exit 1
+          fi
+      - if: steps.release.outputs.skip != 'true' && steps.published.outputs.digest == ''
+        name: Publish release image
         id: image
         uses: docker/build-push-action@v6
         with:
           context: source
           push: true
           platforms: ${{ inputs.platforms }}
-          tags: ${{ steps.release.outputs.image }}:${{ inputs.release-tag }}
+          tags: ${{ steps.release.outputs.image }}:${{ steps.release.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
-            org.opencontainers.image.version=${{ inputs.release-tag }}
+            org.opencontainers.image.version=${{ steps.release.outputs.tag }}
           provenance: true
           sbom: true
-      - name: Create scoped GitOps token
+      - if: steps.release.outputs.skip != 'true' && steps.release.outputs.create-tag == 'true'
+        name: Record automatic release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          gh api --method POST "repos/$SOURCE_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA" >/dev/null
+      - if: steps.release.outputs.skip != 'true'
+        name: Create scoped GitOps token
         id: gitops-token
         uses: actions/create-github-app-token@v3
         with:
@@ -118,7 +193,8 @@ jobs:
           repositories: ${{ steps.release.outputs.repo }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Check out GitOps base
+      - if: steps.release.outputs.skip != 'true'
+        name: Check out GitOps base
         uses: actions/checkout@v7
         with:
           repository: ${{ inputs.gitops-repository }}
@@ -126,7 +202,8 @@ jobs:
           token: ${{ steps.gitops-token.outputs.token }}
           path: gitops
           persist-credentials: false
-      - name: Install manifest tools
+      - if: steps.release.outputs.skip != 'true'
+        name: Install manifest tools
         env:
           KUBECTL_VERSION: v1.35.0
           KUBECTL_SHA256: a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989
@@ -140,7 +217,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/kubectl-bin"
           install -m 0755 "$RUNNER_TEMP/kubectl" "$RUNNER_TEMP/kubectl-bin/kubectl"
           echo "$RUNNER_TEMP/kubectl-bin" >> "$GITHUB_PATH"
-      - name: Prepare GitOps proposal
+      - if: steps.release.outputs.skip != 'true'
+        name: Prepare GitOps proposal
         env:
           APP_NAME: ${{ inputs.app-name }}
           APP_NAMESPACE: ${{ inputs.namespace }}
@@ -148,7 +226,7 @@ jobs:
           GITOPS_DIR: gitops
           GITOPS_REPOSITORY: ${{ inputs.gitops-repository }}
           GITOPS_BRANCH: ${{ inputs.gitops-branch }}
-          IMAGE_REFERENCE: ${{ steps.release.outputs.image }}:${{ inputs.release-tag }}@${{ steps.image.outputs.digest }}
+          IMAGE_REFERENCE: ${{ steps.release.outputs.image }}:${{ steps.release.outputs.tag }}@${{ steps.published.outputs.digest || steps.image.outputs.digest }}
         run: |
           python3 - <<'PY'
           """Prepare an app-scoped GitOps proposal; never deploy or overwrite existing settings."""
@@ -242,13 +320,15 @@ jobs:
               promote(os.environ["MANIFEST_DIR"], os.environ["GITOPS_DIR"],
                       os.environ["APP_NAME"], os.environ["APP_NAMESPACE"], os.environ["IMAGE_REFERENCE"])
           PY
-      - name: Validate proposed manifests
+      - if: steps.release.outputs.skip != 'true'
+        name: Validate proposed manifests
         env:
           APP_NAME: ${{ inputs.app-name }}
         run: |
           kubectl kustomize "gitops/applications/$APP_NAME" > "$RUNNER_TEMP/app.yaml"
           kubectl kustomize gitops/infrastructure > "$RUNNER_TEMP/infrastructure.yaml"
-      - name: Open or update GitOps PR
+      - if: steps.release.outputs.skip != 'true'
+        name: Open or update GitOps PR
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.gitops-token.outputs.token }}
@@ -259,15 +339,15 @@ jobs:
             applications/${{ inputs.app-name }}/
             infrastructure/applications/${{ inputs.app-name }}.yaml
             infrastructure/kustomization.yaml
-          commit-message: Deploy ${{ inputs.app-name }} ${{ inputs.release-tag }}
-          title: Deploy ${{ inputs.app-name }} ${{ inputs.release-tag }}
+          commit-message: Deploy ${{ inputs.app-name }} ${{ steps.release.outputs.tag }}
+          title: Deploy ${{ inputs.app-name }} ${{ steps.release.outputs.tag }}
           body: |
-            Proposes ${{ inputs.app-name }} ${{ inputs.release-tag }} from ${{ github.repository }} at ${{ steps.release.outputs.sha }}.
+            Proposes ${{ inputs.app-name }} ${{ steps.release.outputs.tag }} from ${{ github.repository }} at ${{ steps.release.outputs.sha }}.
 
-            Image: `${{ steps.release.outputs.image }}:${{ inputs.release-tag }}@${{ steps.image.outputs.digest }}`
+            Image: `${{ steps.release.outputs.image }}:${{ steps.release.outputs.tag }}@${{ steps.published.outputs.digest || steps.image.outputs.digest }}`
 
-            First promotion adds the app manifests and manual-sync Argo registration. Later promotions preserve existing configuration and update the image reference.
+            First promotion adds the app manifests and Argo registration. Later promotions preserve existing configuration and update the image reference.
 
             Validation: rendered application and infrastructure Kustomize configurations. Published with SBOM and provenance.
 
-            Before syncing, ensure the GHCR package is public (or configure registry credentials). Review and merge this PR, then manually sync Argo. Verify the PVC, readiness, a real posting import, and persistence across pod replacement.
+            Ensure the GHCR package is public (or configure registry credentials). GitOps repository policy determines whether this PR merges automatically and whether Argo syncs automatically. Verify the PVC, readiness, a real posting import, and persistence across pod replacement.

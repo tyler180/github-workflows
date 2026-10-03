@@ -1,0 +1,273 @@
+name: Publish image and propose GitOps deployment
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+      release-tag:
+        description: Existing vMAJOR.MINOR.PATCH tag on the default branch history
+        required: true
+        type: string
+      manifest-directory:
+        type: string
+        default: deploy
+      gitops-repository:
+        type: string
+        default: tyler180/talos-gitops
+      gitops-branch:
+        type: string
+        default: main
+      platforms:
+        type: string
+        default: linux/amd64
+      app-id:
+        required: true
+        type: string
+    secrets:
+      gitops-app-private-key:
+        required: true
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: gitops-${{ inputs.gitops-repository }}-${{ inputs.app-name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release-tag }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+      - name: Validate release and resolve image
+        id: release
+        working-directory: source
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          APP_NAME: ${{ inputs.app-name }}
+          APP_NAMESPACE: ${{ inputs.namespace }}
+          MANIFEST_DIRECTORY: ${{ inputs.manifest-directory }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITOPS_REPOSITORY: ${{ inputs.gitops-repository }}
+          GITOPS_BRANCH: ${{ inputs.gitops-branch }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          for key in ('APP_NAME', 'APP_NAMESPACE'):
+              if not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', os.environ[key]):
+                  raise SystemExit('Invalid app name or namespace')
+          if not re.fullmatch(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', os.environ['RELEASE_TAG']):
+              raise SystemExit('Use an existing vMAJOR.MINOR.PATCH release tag')
+          if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', os.environ['GITOPS_REPOSITORY']):
+              raise SystemExit('Invalid GitOps repository')
+          directory = Path(os.environ['MANIFEST_DIRECTORY'])
+          if directory.is_absolute() or '..' in directory.parts or directory.is_symlink():
+              raise SystemExit('Manifest directory must be inside the source checkout')
+          if not (directory / 'kustomization.yaml').is_file():
+              raise SystemExit('Manifest directory lacks kustomization.yaml')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('image=ghcr.io/' + os.environ['SOURCE_REPOSITORY'].lower() + '\n')
+              f.write('owner=' + os.environ['GITOPS_REPOSITORY'].split('/')[0] + '\n')
+              f.write('repo=' + os.environ['GITOPS_REPOSITORY'].split('/')[1] + '\n')
+          PY
+          git check-ref-format "refs/heads/$GITOPS_BRANCH"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up image builder
+        uses: docker/setup-buildx-action@v3
+      - name: Sign in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish release image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: source
+          push: true
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.release.outputs.image }}:${{ inputs.release-tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
+            org.opencontainers.image.version=${{ inputs.release-tag }}
+          provenance: true
+          sbom: true
+      - name: Create scoped GitOps token
+        id: gitops-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.gitops-app-private-key }}
+          owner: ${{ steps.release.outputs.owner }}
+          repositories: ${{ steps.release.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Check out GitOps base
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.gitops-repository }}
+          ref: ${{ inputs.gitops-branch }}
+          token: ${{ steps.gitops-token.outputs.token }}
+          path: gitops
+          persist-credentials: false
+      - name: Install manifest tools
+        env:
+          KUBECTL_VERSION: v1.35.0
+          KUBECTL_SHA256: a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989
+        run: |
+          python3 -m venv "$RUNNER_TEMP/manifest-tools"
+          "$RUNNER_TEMP/manifest-tools/bin/pip" install PyYAML==6.0.3
+          echo "$RUNNER_TEMP/manifest-tools/bin" >> "$GITHUB_PATH"
+          curl --fail --silent --show-error --location -o "$RUNNER_TEMP/kubectl" \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/kubectl-bin"
+          install -m 0755 "$RUNNER_TEMP/kubectl" "$RUNNER_TEMP/kubectl-bin/kubectl"
+          echo "$RUNNER_TEMP/kubectl-bin" >> "$GITHUB_PATH"
+      - name: Prepare GitOps proposal
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          APP_NAMESPACE: ${{ inputs.namespace }}
+          MANIFEST_DIR: source/${{ inputs.manifest-directory }}
+          GITOPS_DIR: gitops
+          GITOPS_REPOSITORY: ${{ inputs.gitops-repository }}
+          GITOPS_BRANCH: ${{ inputs.gitops-branch }}
+          IMAGE_REFERENCE: ${{ steps.release.outputs.image }}:${{ inputs.release-tag }}@${{ steps.image.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          """Prepare an app-scoped GitOps proposal; never deploy or overwrite existing settings."""
+          import os
+          import re
+          import shutil
+          from pathlib import Path
+          
+          import yaml
+          
+          
+          def promote(source, target, app, namespace, image):
+              for value in (app, namespace):
+                  if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+                      raise ValueError("app and namespace must be Kubernetes DNS labels")
+              if not re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}", image):
+                  raise ValueError("image must include a release version and SHA256 digest")
+              source, target = Path(source), Path(target)
+              if source.is_symlink() or target.is_symlink():
+                  raise ValueError("symlink directories are not supported")
+              dest = target / "applications" / app
+              fresh = not dest.exists()
+              if fresh:
+                  if not (source / "kustomization.yaml").is_file():
+                      raise ValueError("manifest directory must contain kustomization.yaml")
+                  # Only plain YAML files can be proposed; no symlinks or embedded scripts.
+                  for path in source.rglob("*"):
+                      if path.is_symlink() or (path.is_file() and path.suffix not in (".yaml", ".yml")):
+                          raise ValueError("manifest directory must contain only plain YAML files")
+                  shutil.copytree(source, dest)
+              if any(p.is_symlink() for p in dest.rglob("*")):
+                  raise ValueError("symlinks are not supported")
+              changed = 0
+              for path in sorted(dest.rglob("*")):
+                  if not path.is_file() or path.suffix not in (".yaml", ".yml"):
+                      continue
+                  docs = list(yaml.safe_load_all(path.read_text()))
+                  modified = False
+                  for doc in docs:
+                      if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+                          continue
+                      if doc.get("metadata", {}).get("name") != app:
+                          continue
+                      for container in doc["spec"]["template"]["spec"]["containers"]:
+                          if container.get("name") == app:
+                              container["image"] = image
+                              changed += 1
+                              modified = True
+                  if modified:
+                      path.write_text(yaml.safe_dump_all(docs, sort_keys=False))
+              if changed != 1:
+                  raise ValueError("expected exactly one Deployment/container named after the app")
+              kustomization = dest / "kustomization.yaml"
+              config = yaml.safe_load(kustomization.read_text())
+              if fresh:
+                  if config.get("namespace") != namespace:
+                      raise ValueError("manifest namespace must match workflow namespace")
+              elif config.get("namespace") != namespace:
+                  raise ValueError("existing namespace differs; refusing to move the app")
+              registration = target / "infrastructure" / "applications" / (app + ".yaml")
+              application = {
+                  "apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
+                  "metadata": {"name": app, "namespace": "argocd"},
+                  "spec": {"project": "default", "source": {
+                      "repoURL": "git@github.com:" + os.environ["GITOPS_REPOSITORY"] + ".git",
+                      "targetRevision": os.environ.get("GITOPS_BRANCH", "main"),
+                      "path": "applications/" + app},
+                      "destination": {"server": "https://kubernetes.default.svc", "namespace": namespace},
+                      "syncPolicy": {"syncOptions": ["CreateNamespace=true"]}}}
+              if not registration.exists():
+                  registration.parent.mkdir(parents=True, exist_ok=True)
+                  registration.write_text(yaml.safe_dump(application, sort_keys=False))
+              else:
+                  existing = yaml.safe_load(registration.read_text())
+                  if existing["spec"]["source"] != application["spec"]["source"] or existing["spec"]["destination"] != application["spec"]["destination"]:
+                      raise ValueError("existing Argo registration differs from requested app")
+              root = target / "infrastructure" / "kustomization.yaml"
+              root_config = yaml.safe_load(root.read_text())
+              if not isinstance(root_config.get("resources"), list):
+                  raise ValueError("infrastructure kustomization must contain a resources list")
+              entry = "applications/" + app + ".yaml"
+              if entry not in root_config["resources"]:
+                  # Preserve existing comments, formatting, and resources.
+                  with root.open("a") as f:
+                      f.write("\n  - " + entry + "\n")
+                  if entry not in yaml.safe_load(root.read_text())["resources"]:
+                      raise ValueError("root layout requires manual registration; refusing invalid proposal")
+          
+          
+          if __name__ == "__main__":
+              promote(os.environ["MANIFEST_DIR"], os.environ["GITOPS_DIR"],
+                      os.environ["APP_NAME"], os.environ["APP_NAMESPACE"], os.environ["IMAGE_REFERENCE"])
+          PY
+      - name: Validate proposed manifests
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+        run: |
+          kubectl kustomize "gitops/applications/$APP_NAME" > "$RUNNER_TEMP/app.yaml"
+          kubectl kustomize gitops/infrastructure > "$RUNNER_TEMP/infrastructure.yaml"
+      - name: Open or update GitOps PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.gitops-token.outputs.token }}
+          path: gitops
+          base: ${{ inputs.gitops-branch }}
+          branch: automation/${{ inputs.app-name }}
+          add-paths: |
+            applications/${{ inputs.app-name }}/
+            infrastructure/applications/${{ inputs.app-name }}.yaml
+            infrastructure/kustomization.yaml
+          commit-message: Deploy ${{ inputs.app-name }} ${{ inputs.release-tag }}
+          title: Deploy ${{ inputs.app-name }} ${{ inputs.release-tag }}
+          body: |
+            Proposes ${{ inputs.app-name }} ${{ inputs.release-tag }} from ${{ github.repository }} at ${{ steps.release.outputs.sha }}.
+
+            Image: `${{ steps.release.outputs.image }}:${{ inputs.release-tag }}@${{ steps.image.outputs.digest }}`
+
+            First promotion adds the app manifests and manual-sync Argo registration. Later promotions preserve existing configuration and update the image reference.
+
+            Validation: rendered application and infrastructure Kustomize configurations. Published with SBOM and provenance.
+
+            Before syncing, ensure the GHCR package is public (or configure registry credentials). Review and merge this PR, then manually sync Argo. Verify the PVC, readiness, a real posting import, and persistence across pod replacement.

@@ -1,0 +1,27 @@
+name: Validate Terraform workflows
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/terraform-*.yml'
+      - '.github/workflows/validate-terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/terraform-*.yml'
+      - '.github/workflows/validate-terraform.yml'
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install pinned workflow validator
+        env:
+          GOBIN: ${{ runner.temp }}/actionlint-bin
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Validate reusable workflows
+        run: '"$RUNNER_TEMP/actionlint-bin/actionlint" .github/workflows/terraform-plan.yml .github/workflows/terraform-deploy.yml .github/workflows/validate-terraform.yml'

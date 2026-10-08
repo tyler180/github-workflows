@@ -1,0 +1,62 @@
+name: Reusable Terraform PR plan
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: '.'
+      terraform-version:
+        type: string
+        required: true
+      aws-region:
+        type: string
+        default: us-west-2
+      plan-role-arn:
+        type: string
+        required: true
+      state-id:
+        description: Unique identifier for this state within the caller repository
+        type: string
+        required: true
+    secrets:
+      terraform-github-token:
+        description: Optional credential for the Terraform GitHub provider
+        required: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: terraform-preview-${{ inputs.state-id }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  GITHUB_TOKEN: ${{ secrets.terraform-github-token }}
+jobs:
+  plan:
+    # Never execute fork code with cloud/provider credentials.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.plan-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -input=false
+      - run: terraform validate -no-color
+      - name: Plan
+        run: terraform plan -input=false -lock-timeout=5m -no-color

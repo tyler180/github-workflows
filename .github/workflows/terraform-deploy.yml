@@ -1,0 +1,136 @@
+name: Reusable Terraform deployment
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: '.'
+      terraform-version:
+        type: string
+        required: true
+      aws-region:
+        type: string
+        default: us-west-2
+      plan-role-arn:
+        type: string
+        required: true
+      state-id:
+        description: Unique identifier for this state within the caller repository
+        type: string
+        required: true
+      apply-role-arn:
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+    secrets:
+      terraform-github-token:
+        description: Optional credential for the Terraform GitHub provider
+        required: false
+      apply-terraform-github-token:
+        description: Optional write credential for the Terraform GitHub provider
+        required: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: terraform-deploy-${{ inputs.state-id }}
+  cancel-in-progress: false
+env:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  GITHUB_TOKEN: ${{ secrets.terraform-github-token }}
+jobs:
+  plan:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+      artifact-name: terraform-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.state-id }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.plan-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -input=false
+      - run: terraform validate -no-color
+      - name: Create deployment plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -lock-timeout=5m -no-color -detailed-exitcode -out=tfplan
+          status=$?
+          set -e
+          case "$status" in
+            0) echo 'changes=false' >> "$GITHUB_OUTPUT" ;;
+            2) echo 'changes=true' >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+      - name: Package exact planned working directory
+        if: steps.plan.outputs.changes == 'true'
+        run: tar --exclude='./.git' -czf "$RUNNER_TEMP/terraform-plan.tgz" .
+      - name: Upload sensitive deployment bundle
+        if: steps.plan.outputs.changes == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: terraform-plan-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.state-id }}
+          path: ${{ runner.temp }}/terraform-plan.tgz
+          retention-days: 1
+          if-no-files-found: error
+  apply:
+    env:
+      GITHUB_TOKEN: ${{ secrets.apply-terraform-github-token }}
+    needs: plan
+    if: needs.plan.outputs.changes == 'true'
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reject a superseded deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          latest=$(gh api "repos/$REPOSITORY/commits/$DEFAULT_BRANCH" --jq '.sha')
+          test "$latest" = "$SOURCE_SHA" || { echo 'Default branch advanced. Generate and approve a fresh plan.'; exit 1; }
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.plan.outputs.artifact-name }}
+          path: ${{ runner.temp }}/terraform-plan
+      - name: Restore planned working directory
+        run: tar -xzf "$RUNNER_TEMP/terraform-plan/terraform-plan.tgz"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.apply-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+      - name: Apply approved saved plan
+        run: terraform apply -input=false -lock-timeout=5m -no-color tfplan

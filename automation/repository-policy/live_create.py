@@ -86,7 +86,8 @@ def verify_repositories(repos):
         expected = {
             'name': repo['name'], 'visibility': repo.get('visibility', 'private'),
             'description': repo.get('description', ''), 'homepage': repo.get('homepage_url', ''),
-            'archived': False, 'delete_branch_on_merge': repo.get('delete_branch_on_merge', True),
+            'archived': False, 'full_name': f'{OWNER}/{repo["name"]}',
+            'private': repo.get('visibility', 'private') == 'private', 'fork': False, 'delete_branch_on_merge': repo.get('delete_branch_on_merge', True),
             'allow_auto_merge': repo.get('allow_auto_merge', False),
             'allow_update_branch': repo.get('allow_update_branch', True),
         }
@@ -112,16 +113,20 @@ def main():
     p.add_argument('--plan-json', required=True)
     p.add_argument('--receipt', required=True)
     args = p.parse_args()
+    phase = 'configuration freshness'
     try:
         policy.require(policy.SHA.fullmatch(args.sha) and policy.SHA.fullmatch(args.policy_sha), 'Full configuration revision required')
         latest = command(['gh','api','repos/tyler180/github-infra/commits/main','--jq','.sha']).decode().strip()
         policy.require(latest == args.sha, 'Configuration superseded')
+        phase = 'production protection checks'
         verify_environment()
         config = Path(args.configuration).resolve()
         candidate = policy.load_json(config/'repositories.json')
         plan = policy.load_json(args.plan_json)
         receipt_path = Path(args.receipt)
+        phase = 'accepted-record read'
         record, etag = read_record(receipt_path.parent)
+        phase = 'plan policy'
         repos = validate_inputs(candidate, plan, record)
         binding = {'policy_sha':args.policy_sha, 'policy_version':args.policy_version, 'configuration_sha': args.sha, 'configuration_digest': policy.tree_digest(config),
                    'saved_plan_digest': policy.digest(Path(args.plan).read_bytes()),
@@ -130,6 +135,7 @@ def main():
             binding.update(mode='live-create', evaluated_at=datetime.now(timezone.utc).isoformat())
             receipt_path.write_text(json.dumps(binding))
         else:
+            phase = 'authorization binding'
             receipt = policy.load_json(receipt_path)
             policy.require(receipt.get('mode') == 'live-create' and all(receipt.get(k) == v for k,v in binding.items()), 'Authorization binding changed')
             age = (datetime.now(timezone.utc)-datetime.fromisoformat(receipt['evaluated_at'])).total_seconds()
@@ -137,6 +143,7 @@ def main():
             if args.mode == 'recheck':
                 print('Authorization remains current.')
                 return 0
+            phase = 'post-apply GitHub verification'
             entries = verify_repositories(repos)
             if record:
                 policy.require(all(entries[k]['repository_id'] == v['repository_id'] for k,v in record['repositories'].items()), 'Accepted repository identity changed')
@@ -145,12 +152,14 @@ def main():
                            'accepted_at':datetime.now(timezone.utc).isoformat(), 'authorization':receipt}
             output = receipt_path.parent/'next-record.json'
             output.write_text(json.dumps(next_record))
+            phase = 'conditional accepted-record write'
             command(['aws','s3api','put-object','--bucket',BUCKET,'--key',KEY,'--body',str(output),
                      *(['--if-match',etag] if etag else ['--if-none-match','*'])])
         print('Live create-stage '+args.mode+' succeeded.')
         return 0
-    except (policy.PolicyError, KeyError, ValueError, OSError, TypeError):
-        print('Live create-stage validation failed; accepted record not advanced.', file=sys.stderr)
+    except (policy.PolicyError, KeyError, ValueError, OSError, TypeError) as error:
+        reason = str(error) if isinstance(error, policy.PolicyError) else type(error).__name__
+        print(f'Live create-stage validation failed at {phase}: {reason}; accepted record not advanced.', file=sys.stderr)
         return 1
 
 if __name__ == '__main__':

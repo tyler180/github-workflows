@@ -28,6 +28,27 @@ class LiveTests(unittest.TestCase):
         candidate, plan = self.create_inputs()
         live.validate_inputs(candidate, plan, None)
 
+    def test_real_provider_create_computed_fields_are_allowed(self):
+        candidate, plan = self.create_inputs()
+        change = next(c for c in plan['resource_changes'] if c['type']=='github_repository')
+        change['change']['after_unknown'] = {k:True for k in
+            ('full_name','private','fork','source_owner','source_repo','web_commit_signoff_required')}
+        live.validate_inputs(candidate, plan, None)
+
+    def test_unknown_configured_visibility_still_rejected(self):
+        candidate, plan = self.create_inputs()
+        change = next(c for c in plan['resource_changes'] if c['type']=='github_repository')
+        change['change']['after_unknown'] = {'visibility':True}
+        with self.assertRaisesRegex(live.policy.PolicyError, 'Unknown critical'):
+            live.validate_inputs(candidate, plan, None)
+
+    def test_known_fork_creation_still_rejected(self):
+        candidate, plan = self.create_inputs()
+        change = next(c for c in plan['resource_changes'] if c['type']=='github_repository')
+        change['change']['after']['fork'] = 'true'
+        with self.assertRaisesRegex(live.policy.PolicyError, 'Fork creation'):
+            live.validate_inputs(candidate, plan, None)
+
     def test_implicit_adoption_is_rejected(self):
         candidate, plan = self.create_inputs()
         next(c for c in plan['resource_changes'] if c['type']=='github_repository')['change']['actions'] = ['no-op']

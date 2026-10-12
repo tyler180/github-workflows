@@ -260,7 +260,11 @@ def validate_plan(candidate, base, record, plan):
         if item["type"] == "github_repository" and key not in previous and actions == ["create"]:
             # Newly created external/computed configuration is inspected after
             # creation. It must not be guessed in a pre-creation plan.
-            harmless_computed.update({"security_and_analysis", "allow_forking", "vulnerability_alerts", "default_branch", "pages"})
+            require(after.get("fork") in (None, "", "false", False), "Fork creation is unsupported")
+            require(all(after.get(k) in (None, "") for k in ("source_owner", "source_repo")), "Fork source is unsupported")
+            harmless_computed.update({"security_and_analysis", "allow_forking", "vulnerability_alerts", "default_branch", "pages",
+                                      "full_name", "private", "fork", "source_owner", "source_repo",
+                                      "web_commit_signoff_required"})
         require(not has_unknown({k: v for k, v in unknown.items() if k not in harmless_computed}), "Unknown critical policy value")
         if item["type"] == "github_repository":
             if key in previous:

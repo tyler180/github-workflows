@@ -110,6 +110,13 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(policy.PolicyError, 'Protected stages require a ruleset'):
             policy.evaluate(*args, NOW)
 
+    def test_existing_repository_computed_unknown_not_exempted(self):
+        args = fixture('create','create')
+        change = next(c for c in args[-1]['resource_changes'] if c['type']=='github_repository')
+        change['change']['after_unknown'] = {'web_commit_signoff_required':True}
+        with self.assertRaisesRegex(policy.PolicyError, 'Unknown critical'):
+            policy.evaluate(*args,NOW)
+
     def assert_rejected(self, mutate, old="verify", stage="protect"):
         args = fixture(old, stage)
         mutate(*args)

@@ -1,0 +1,11 @@
+- id: repository-hygiene
+  name: Repository hygiene
+  entry: hooks/repository_hygiene.py
+  language: script
+  types: [text]
+- id: secret-scan
+  name: Secret detection (Gitleaks 8.30.1)
+  entry: hooks/secret_scan.py --staged
+  language: script
+  pass_filenames: false
+  always_run: true

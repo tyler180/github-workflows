@@ -1,0 +1,151 @@
+name: Deploy verified create-stage repository inventory
+on:
+  workflow_call:
+    inputs:
+      trusted-policy-ref:
+        type: string
+        required: true
+      apply-role-arn:
+        type: string
+        required: true
+      record-writer-role-arn:
+        type: string
+        required: true
+    secrets:
+      TF_GITHUB_PLAN_TOKEN:
+        required: true
+      TF_GITHUB_APPLY_TOKEN:
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: github-infra-repository-state
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.repository == 'tyler180/github-infra' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.apply-role-arn }}
+          aws-region: us-west-2
+      - name: Plan with read-only GitHub credential
+        env:
+          GITHUB_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          TF_IN_AUTOMATION: 'true'
+          TF_INPUT: 'false'
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_TOKEN"
+          terraform init -input=false -lockfile=readonly
+          terraform validate -no-color
+          terraform plan -input=false -lock-timeout=5m -no-color -out="$RUNNER_TEMP/saved.tfplan"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: create-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/saved.tfplan
+          retention-days: 1
+          if-no-files-found: error
+  deploy:
+    needs: plan
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Check trusted policy revision
+        env:
+          POLICY_REF: ${{ inputs.trusted-policy-ref }}
+        run: '[[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: configuration
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.trusted-policy-ref }}
+          path: trusted-policy
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact-id }}
+          path: ${{ runner.temp }}/plan
+          merge-multiple: true
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Decode saved plan independently using official providers
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/decoder"
+          cat > "$RUNNER_TEMP/decoder/providers.tf" <<'HCL'
+          terraform {
+            required_providers {
+              github = { source = "integrations/github", version = "= 6.13.0" }
+              aws = { source = "hashicorp/aws", version = "= 6.68.0" }
+            }
+          }
+          HCL
+          terraform -chdir="$RUNNER_TEMP/decoder" init -backend=false -input=false
+          terraform -chdir="$RUNNER_TEMP/decoder" show -json "$RUNNER_TEMP/plan/saved.tfplan" > "$RUNNER_TEMP/plan/plan.json"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.apply-role-arn }}
+          aws-region: us-west-2
+      - name: Authorize exact plan after production approval
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 -I trusted-policy/automation/repository-policy/live_create.py authorize \
+            --configuration configuration --sha "$SOURCE_SHA" \
+            --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
+            --receipt "$RUNNER_TEMP/plan/authorization.json"
+      - name: Apply authorized saved plan
+        working-directory: configuration
+        env:
+          GITHUB_TOKEN: ${{ secrets.TF_GITHUB_APPLY_TOKEN }}
+          GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          TF_IN_AUTOMATION: 'true'
+          TF_INPUT: 'false'
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_TOKEN"
+          terraform init -input=false -lockfile=readonly
+          test "$(gh api repos/tyler180/github-infra/commits/main --jq '.sha')" = "$SOURCE_SHA"
+          python3 -I ../trusted-policy/automation/repository-policy/live_create.py recheck \
+            --configuration . --sha "$SOURCE_SHA" \
+            --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
+            --receipt "$RUNNER_TEMP/plan/authorization.json"
+          terraform apply -input=false -lock-timeout=5m -no-color "$RUNNER_TEMP/plan/saved.tfplan"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.record-writer-role-arn }}
+          aws-region: us-west-2
+          unset-current-credentials: true
+      - name: Verify actual repositories and conditionally advance accepted record
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 -I trusted-policy/automation/repository-policy/live_create.py accept \
+            --configuration configuration --sha "$SOURCE_SHA" \
+            --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
+            --receipt "$RUNNER_TEMP/plan/authorization.json"

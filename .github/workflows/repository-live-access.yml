@@ -1,0 +1,69 @@
+name: Verify repository deployment access
+on:
+  workflow_call:
+    inputs:
+      apply-role-arn:
+        type: string
+        required: true
+      record-writer-role-arn:
+        type: string
+        required: true
+    secrets:
+      TF_GITHUB_PLAN_TOKEN:
+        required: true
+      TF_GITHUB_APPLY_TOKEN:
+        required: true
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  verify:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify GitHub credentials without mutations
+        env:
+          PLAN_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          APPLY_TOKEN: ${{ secrets.TF_GITHUB_APPLY_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PLAN_TOKEN" && test -n "$APPLY_TOKEN"
+          for credential in "$PLAN_TOKEN" "$APPLY_TOKEN"; do
+            GH_TOKEN="$credential" gh api repos/tyler180/github-infra --jq '.id' | grep -qx 1339004765
+          done
+          echo 'Both credentials can read the configuration repository; write capabilities require the later approved pilot.'
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.record-writer-role-arn }}
+          aws-region: us-west-2
+          role-session-name: record-access-${{ github.run_id }}
+      - name: Verify record writer with a disposable probe
+        env:
+          RECORD_ROLE: ${{ inputs.record-writer-role-arn }}
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Arn --output text)" = "arn:aws:sts::138013422358:assumed-role/${RECORD_ROLE##*/}/record-access-$GITHUB_RUN_ID"
+          key="github/github-infra/onboarding/access-tests/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          printf '{"purpose":"access-test","run_id":"%s"}\n' "$GITHUB_RUN_ID" > "$RUNNER_TEMP/probe.json"
+          aws s3api put-object --bucket 749rmw-tf-backends --key "$key" --body "$RUNNER_TEMP/probe.json" --if-none-match '*' > /dev/null
+          aws s3api get-object --bucket 749rmw-tf-backends --key "$key" "$RUNNER_TEMP/readback.json" > /dev/null
+          cmp "$RUNNER_TEMP/probe.json" "$RUNNER_TEMP/readback.json"
+          echo 'Record writer can write and read its prefix. The probe is retained; this role has no delete permission.'
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.apply-role-arn }}
+          aws-region: us-west-2
+          unset-current-credentials: true
+          role-session-name: deploy-access-${{ github.run_id }}
+      - name: Verify shared role cannot write records
+        run: |
+          set -euo pipefail
+          key="github/github-infra/onboarding/access-tests/denied-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          if aws s3api put-object --bucket 749rmw-tf-backends --key "$key" --body "$RUNNER_TEMP/probe.json" > /dev/null 2> "$RUNNER_TEMP/denial.txt"; then
+            echo 'Shared role unexpectedly wrote an onboarding record.' >&2
+            exit 1
+          fi
+          grep -q 'AccessDenied' "$RUNNER_TEMP/denial.txt" || { echo 'Write failed for a reason other than access denial.' >&2; exit 1; }
+          aws s3api list-objects-v2 --bucket 749rmw-tf-backends --prefix github/github-infra.tfstate --max-keys 1 > /dev/null
+          echo 'Shared role can list the backend prefix and is denied record writes.'

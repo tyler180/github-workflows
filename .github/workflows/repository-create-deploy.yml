@@ -66,10 +66,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - name: Check trusted policy revision
-        env:
-          POLICY_REF: ${{ inputs.trusted-policy-ref }}
-        run: '[[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ ]]'
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: ${{ github.sha }}
@@ -81,6 +77,14 @@ jobs:
           ref: ${{ inputs.trusted-policy-ref }}
           path: trusted-policy
           persist-credentials: false
+      - name: Verify immutable release and resolve policy commit
+        id: policy-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_REF: ${{ inputs.trusted-policy-ref }}
+        run: |
+          python3 -I trusted-policy/automation/repository-policy/release_ref.py \
+            --ref "$POLICY_REF" --checkout trusted-policy --output "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.plan.outputs.artifact-id }}
@@ -112,9 +116,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
+          POLICY_SHA: ${{ steps.policy-version.outputs.sha }}
+          POLICY_VERSION: ${{ steps.policy-version.outputs.version }}
         run: |
           python3 -I trusted-policy/automation/repository-policy/live_create.py authorize \
             --configuration configuration --sha "$SOURCE_SHA" \
+            --policy-sha "$POLICY_SHA" --policy-version "$POLICY_VERSION" \
             --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
             --receipt "$RUNNER_TEMP/plan/authorization.json"
       - name: Apply authorized saved plan
@@ -123,6 +130,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TF_GITHUB_APPLY_TOKEN }}
           GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
+          POLICY_SHA: ${{ steps.policy-version.outputs.sha }}
+          POLICY_VERSION: ${{ steps.policy-version.outputs.version }}
           TF_IN_AUTOMATION: 'true'
           TF_INPUT: 'false'
         run: |
@@ -132,6 +141,7 @@ jobs:
           test "$(gh api repos/tyler180/github-infra/commits/main --jq '.sha')" = "$SOURCE_SHA"
           python3 -I ../trusted-policy/automation/repository-policy/live_create.py recheck \
             --configuration . --sha "$SOURCE_SHA" \
+            --policy-sha "$POLICY_SHA" --policy-version "$POLICY_VERSION" \
             --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
             --receipt "$RUNNER_TEMP/plan/authorization.json"
           terraform apply -input=false -lock-timeout=5m -no-color "$RUNNER_TEMP/plan/saved.tfplan"
@@ -144,8 +154,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
+          POLICY_SHA: ${{ steps.policy-version.outputs.sha }}
+          POLICY_VERSION: ${{ steps.policy-version.outputs.version }}
         run: |
           python3 -I trusted-policy/automation/repository-policy/live_create.py accept \
             --configuration configuration --sha "$SOURCE_SHA" \
+            --policy-sha "$POLICY_SHA" --policy-version "$POLICY_VERSION" \
             --plan "$RUNNER_TEMP/plan/saved.tfplan" --plan-json "$RUNNER_TEMP/plan/plan.json" \
             --receipt "$RUNNER_TEMP/plan/authorization.json"

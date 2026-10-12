@@ -106,12 +106,14 @@ def main():
     p.add_argument('mode', choices=['authorize', 'recheck', 'accept'])
     p.add_argument('--configuration', required=True)
     p.add_argument('--sha', required=True)
+    p.add_argument('--policy-sha', required=True)
+    p.add_argument('--policy-version', required=True)
     p.add_argument('--plan', required=True)
     p.add_argument('--plan-json', required=True)
     p.add_argument('--receipt', required=True)
     args = p.parse_args()
     try:
-        policy.require(policy.SHA.fullmatch(args.sha), 'Full configuration revision required')
+        policy.require(policy.SHA.fullmatch(args.sha) and policy.SHA.fullmatch(args.policy_sha), 'Full configuration revision required')
         latest = command(['gh','api','repos/tyler180/github-infra/commits/main','--jq','.sha']).decode().strip()
         policy.require(latest == args.sha, 'Configuration superseded')
         verify_environment()
@@ -121,7 +123,7 @@ def main():
         receipt_path = Path(args.receipt)
         record, etag = read_record(receipt_path.parent)
         repos = validate_inputs(candidate, plan, record)
-        binding = {'configuration_sha': args.sha, 'configuration_digest': policy.tree_digest(config),
+        binding = {'policy_sha':args.policy_sha, 'policy_version':args.policy_version, 'configuration_sha': args.sha, 'configuration_digest': policy.tree_digest(config),
                    'saved_plan_digest': policy.digest(Path(args.plan).read_bytes()),
                    'plan_digest': policy.digest(policy.canonical(plan)), 'record_etag': etag}
         if args.mode == 'authorize':

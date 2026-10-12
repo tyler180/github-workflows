@@ -60,7 +60,7 @@ class LiveTests(unittest.TestCase):
             (config/'repositories.json').write_text(json.dumps(candidate))
             (root/'plan.json').write_text(json.dumps(plan));(root/'saved').write_bytes(b'original')
             argv=['live_create.py','authorize','--configuration',str(config),'--sha','a'*40,
-                  '--plan',str(root/'saved'),'--plan-json',str(root/'plan.json'),'--receipt',str(root/'receipt.json')]
+                  '--policy-sha','b'*40,'--policy-version','v2.1.0-rc.2','--plan',str(root/'saved'),'--plan-json',str(root/'plan.json'),'--receipt',str(root/'receipt.json')]
             with patch.object(sys,'argv',argv), patch.object(live,'verify_environment'), patch.object(live,'read_record',return_value=(None,None)), patch.object(live,'command',return_value=('a'*40).encode()):
                 self.assertEqual(live.main(),0)
             (root/'saved').write_bytes(b'changed')

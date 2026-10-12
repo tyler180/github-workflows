@@ -91,6 +91,18 @@ class LiveTests(unittest.TestCase):
                 verify.assert_not_called()
                 self.assertFalse(any(call.args[0][0]=='aws' for call in commands.call_args_list))
 
+    def test_missing_api_settings_fail_with_field_names(self):
+        import json
+        candidate,plan=self.create_inputs()
+        actual=next(c for c in plan['resource_changes'] if c['type']=='github_repository')['change']['after'].copy()
+        actual.update(id=123,owner={'id':15354990},full_name='tyler180/offline-fixture',private=True,fork=False,default_branch='main',homepage='')
+        with patch.object(live,'command',return_value=json.dumps(actual).encode()):
+            self.assertEqual(live.verify_repositories(candidate['repositories'])['pilot']['repository_id'],123)
+        del actual['allow_update_branch']
+        with patch.object(live,'command',return_value=json.dumps(actual).encode()):
+            with self.assertRaisesRegex(live.policy.PolicyError,'allow_update_branch'):
+                live.verify_repositories(candidate['repositories'])
+
     def test_later_stages_are_blocked(self):
         for stage in ('bootstrap', 'verify', 'protect', 'grant'):
             candidate = fixture('create', stage)[2]

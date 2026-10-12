@@ -1,0 +1,77 @@
+name: Reusable generic repository validation
+on:
+  workflow_call:
+    inputs:
+      tooling-ref:
+        description: Reviewed full SHA or immutable release tag used for this workflow call.
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          path: candidate
+          fetch-depth: 0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.tooling-ref }}
+          persist-credentials: false
+          path: trusted-tooling
+      - name: Verify immutable tooling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLING_REF: ${{ inputs.tooling-ref }}
+        run: python3 -I trusted-tooling/automation/repository-policy/release_ref.py --ref "$TOOLING_REF" --checkout trusted-tooling --output "$GITHUB_OUTPUT"
+      - name: Run shared read-only hygiene
+        run: git -C candidate ls-files -z | xargs -0 -r -I '{}' python3 -I trusted-tooling/hooks/repository_hygiene.py 'candidate/{}'
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: candidate
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.tooling-ref }}
+          persist-credentials: false
+          path: trusted-tooling
+      - name: Verify immutable tooling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLING_REF: ${{ inputs.tooling-ref }}
+        run: python3 -I trusted-tooling/automation/repository-policy/release_ref.py --ref "$TOOLING_REF" --checkout trusted-tooling --output "$GITHUB_OUTPUT"
+      - name: Install checksum-pinned scanner
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks.tgz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/scanner"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/scanner" gitleaks
+          echo "$RUNNER_TEMP/scanner" >> "$GITHUB_PATH"
+      - name: Scan history with central rules and redacted output
+        run: python3 -I trusted-tooling/hooks/secret_scan.py candidate
+  gate:
+    name: platform-ci
+    needs: [validate, secrets]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.validate.result }}
+      SECRET_RESULT: ${{ needs.secrets.result }}
+    steps:
+      - run: test "$RESULT" = success && test "$SECRET_RESULT" = success

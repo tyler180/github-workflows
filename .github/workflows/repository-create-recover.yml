@@ -1,0 +1,78 @@
+name: Recover accepted record for completed pilot apply
+on:
+  workflow_call:
+    inputs:
+      trusted-policy-ref:
+        type: string
+        required: true
+      apply-role-arn:
+        type: string
+        required: true
+      record-writer-role-arn:
+        type: string
+        required: true
+    secrets:
+      TF_GITHUB_APPLY_TOKEN:
+        required: true
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+concurrency:
+  group: github-infra-repository-state
+  cancel-in-progress: false
+jobs:
+  recover:
+    if: github.repository == 'tyler180/github-infra' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: '1064d83772acb9c345dc5a0156ec63a4a7b081b1'
+          path: applied-configuration
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.trusted-policy-ref }}
+          path: trusted-policy
+          persist-credentials: false
+      - name: Verify immutable recovery policy
+        id: policy-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_REF: ${{ inputs.trusted-policy-ref }}
+        run: |
+          python3 -I trusted-policy/automation/repository-policy/release_ref.py \
+            --ref "$POLICY_REF" --checkout trusted-policy --output "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.apply-role-arn }}
+          aws-region: us-west-2
+      - name: Read persisted state without Terraform operations
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery"
+          aws s3api get-object --bucket 749rmw-tf-backends \
+            --key github/github-infra.tfstate "$RUNNER_TEMP/recovery/state.json" > /dev/null
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708
+        with:
+          role-to-assume: ${{ inputs.record-writer-role-arn }}
+          aws-region: us-west-2
+          unset-current-credentials: true
+      - name: Verify completed apply and recover only the initial accepted record
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_APPLY_TOKEN }}
+          GH_RUN_TOKEN: ${{ github.token }}
+          CURRENT_SHA: ${{ github.sha }}
+          POLICY_SHA: ${{ steps.policy-version.outputs.sha }}
+          POLICY_VERSION: ${{ steps.policy-version.outputs.version }}
+        run: |
+          test -n "$GH_TOKEN"
+          python3 -I trusted-policy/automation/repository-policy/recover_create.py \
+            --configuration applied-configuration \
+            --applied-sha 1064d83772acb9c345dc5a0156ec63a4a7b081b1 \
+            --current-sha "$CURRENT_SHA" --policy-sha "$POLICY_SHA" --policy-version "$POLICY_VERSION" \
+            --run-id 38320705436 --repository-id 1416221483 \
+            --state "$RUNNER_TEMP/recovery/state.json" --output "$RUNNER_TEMP/recovery/accepted-recovery.json"

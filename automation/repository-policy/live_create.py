@@ -15,8 +15,8 @@ KEY = 'github/github-infra/onboarding/accepted.json'
 OWNER = 'tyler180'
 
 
-def command(args):
-    result = subprocess.run(args, capture_output=True)
+def command(args, env=None):
+    result = subprocess.run(args, capture_output=True, env=env)
     policy.require(result.returncode == 0, 'Trusted service operation failed')
     return result.stdout
 
@@ -95,7 +95,8 @@ def verify_repositories(repos):
         expected.update({f'allow_{m}_merge' if m != 'merge' else 'allow_merge_commit': m in methods for m in ('merge', 'squash', 'rebase')})
         features = repo.get('features', {})
         expected.update({'has_'+name: features.get(name, default) for name, default in [('issues', True), ('discussions', False), ('wiki', False), ('projects', False)]})
-        policy.require(all((actual.get(k) or '' if k in ('description','homepage') else actual.get(k)) == v for k,v in expected.items()), 'Post-apply settings differ')
+        mismatches = [k for k,v in expected.items() if (actual.get(k) or '' if k in ('description','homepage') else actual.get(k)) != v]
+        policy.require(not mismatches, 'Post-apply settings differ or unavailable: ' + ', '.join(mismatches))
         policy.require(actual['owner']['id'] == 15354990 and actual['default_branch'] == repo.get('default_branch', 'main'), 'Post-apply owner/branch differs')
         policy.require(sorted(actual.get('topics', [])) == sorted(repo.get('topics', [])), 'Post-apply topics differ')
         accepted[key] = {'name': repo['name'], 'stage': 'create', 'repository_id': actual['id'], 'tooling_digest': policy.tooling_digest(repo)}

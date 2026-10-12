@@ -152,7 +152,7 @@ jobs:
           unset-current-credentials: true
       - name: Verify actual repositories and conditionally advance accepted record
         env:
-          GH_TOKEN: ${{ secrets.TF_GITHUB_PLAN_TOKEN }}
+          GH_TOKEN: ${{ secrets.TF_GITHUB_APPLY_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
           POLICY_SHA: ${{ steps.policy-version.outputs.sha }}
           POLICY_VERSION: ${{ steps.policy-version.outputs.version }}

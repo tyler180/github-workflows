@@ -72,33 +72,4 @@ jobs:
           GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
         run: |
           set -euo pipefail
-          python3 - "$RUNNER_TEMP/bootstrap-report.json" <<'PY'
-          import json
-          import subprocess
-          import sys
-          import time
-
-          for result in json.load(open(sys.argv[1])):
-              if result['status'] != 'pr-open':
-                  continue
-              # Registration may lag PR creation; a successful read with no checks is not evidence.
-              for attempt in range(30):
-                  response = subprocess.run(['gh', 'pr', 'checks', result['pr_url'], '--json', 'name,state'], capture_output=True, text=True)
-                  if response.returncode not in (0, 8) and "no checks reported" not in response.stderr.lower():
-                      raise SystemExit('Cannot read bootstrap PR checks. Verify Checks and Actions read access for TF_GITHUB_BOOTSTRAP_TOKEN. ' + response.stderr.strip())
-                  if response.stdout.strip():
-                      checks = json.loads(response.stdout)
-                      if checks:
-                          break
-                  time.sleep(5)
-              else:
-                  raise SystemExit('Bootstrap PR has no registered checks; inspect ' + result['pr_url'])
-              subprocess.run(['gh', 'pr', 'checks', result['pr_url'], '--watch', '--fail-fast', '--interval', '10'], check=True)
-              actual = subprocess.check_output(['gh', 'pr', 'view', result['pr_url'], '--json', 'headRefOid', '--jq', '.headRefOid'], text=True).strip()
-              if actual != result['head_sha']:
-                  raise SystemExit('Bootstrap PR changed during validation; review the new head')
-              final = json.loads(subprocess.check_output(['gh', 'pr', 'checks', result['pr_url'], '--json', 'name,state'], text=True))
-              if not any(check['name'].endswith('platform-ci') for check in final) or any(check['state'] != 'SUCCESS' for check in final):
-                  raise SystemExit('Required bootstrap validation did not succeed: ' + result['pr_url'])
-              print('Checks passed for verified bootstrap head: ' + result['pr_url'])
-          PY
+          python3 -I automation/automation/repository-bootstrap/verify.py --report "$RUNNER_TEMP/bootstrap-report.json"

@@ -11,7 +11,7 @@ approves github-module `6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32` and shared too
 `0ecbb0fcaea1deb8a8617a51d719b821500e873f`. Updates need a reviewed automation version.
 
 The production environment supplies a separate `TF_GITHUB_BOOTSTRAP_TOKEN` with
-Contents, Workflows and Pull requests write and Administration read. The workflow
+Contents, Workflows and Pull requests write; Administration, Checks and Actions read. The workflow
 uses only main-branch manually dispatched infrastructure configuration, has no
 OIDC authority, and never executes destination code with that token. The existing
 Go CI runs without bootstrap credentials. CI must pass on the observed PR head;

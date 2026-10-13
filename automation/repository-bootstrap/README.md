@@ -38,3 +38,22 @@ The generated configuration adds the shared hygiene/secret hooks and a local Go
 format/vet/race validation hook. GitHub cannot install hooks into developer clones.
 
 Run `python3 -m unittest discover -s automation/repository-bootstrap -p 'test_*.py'`.
+
+## Human-readable versions
+
+Use `bootstrap.source_ref`, `workflow_ref`, and `hook_ref` with an approved full
+SHA or exact immutable published semantic-version release (including prereleases).
+Legacy `_sha` fields remain supported for full SHAs only. Mixed alias sets fail.
+Branches, floating major tags, mutable/draft releases, missing releases and tags
+resolving outside the automation's approved commit set fail before rendering or
+remote writes. Annotated tags are resolved with a bounded chain. Referencing a
+release does not approve new executable sources: promoting a new commit still
+requires a reviewed automation update.
+
+Rendering uses resolved SHAs so generated source and the bootstrap fingerprint do
+not change when an equivalent release label replaces a SHA. New bootstrap markers
+and every run report record both requested refs and resolved source/workflow/hook
+SHAs. Existing markers/application files are not rewritten solely to add labels.
+The approved starter commit currently has no release; keep its SHA until a reviewed
+immutable release exists. The existing workflow/hook release v2.2.0-rc.1 is verified
+at runtime. Publishing releases is separate from validating/bootstrap execution.

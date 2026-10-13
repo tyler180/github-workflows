@@ -1,6 +1,7 @@
 """Create an exact-source Go bootstrap PR; never merge or rewrite application files."""
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -16,6 +17,8 @@ SOURCE_SHA = "6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32"
 TOOLING_SHA = "0ecbb0fcaea1deb8a8617a51d719b821500e873f"
 MARKER = ".platform-bootstrap.json"
 BRANCH = "automation/bootstrap-go"
+SHA = re.compile(r"[0-9a-f]{40}")
+VERSION = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?")
 
 
 def require(condition, message):
@@ -48,11 +51,32 @@ class API:
             raise ValueError(f"GitHub {method} {path.split('?')[0]} failed (HTTP {error.code})") from None
 
 
-def profiles(inventory, owner):
+def resolve_reference(api, repository, ref):
+    require(isinstance(ref, str), "Bootstrap references must be strings")
+    if SHA.fullmatch(ref):
+        return ref
+    require(VERSION.fullmatch(ref), "Use a full SHA or exact version release; branches/floating tags are prohibited")
+    require(api is not None, "Release references require independent GitHub resolution")
+    prefix = f"repos/{repository}/"
+    release = api.call("GET", prefix + "releases/tags/" + ref)
+    require(release.get("tag_name") == ref and release.get("draft") is False and release.get("immutable") is True,
+            "Bootstrap version must be a published immutable release")
+    obj = api.call("GET", prefix + "git/ref/tags/" + ref)["object"]
+    for _ in range(4):
+        if obj.get("type") != "tag":
+            break
+        require(SHA.fullmatch(obj.get("sha", "")), "Invalid annotated tag object")
+        obj = api.call("GET", prefix + "git/tags/" + obj["sha"])["object"]
+    require(obj.get("type") == "commit" and SHA.fullmatch(obj.get("sha", "")), "Release does not resolve to a commit")
+    return obj["sha"]
+
+
+def profiles(inventory, owner, api=None):
     require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", owner), "Invalid owner")
     require(inventory.get("schema_version") == 1, "Unsupported inventory schema")
     result = []
     for key, repo in inventory["repositories"].items():
+        repo = copy.deepcopy(repo)
         require(re.fullmatch(r"[A-Za-z0-9_-]+", key), "Invalid inventory key")
         profile = repo.get("profile")
         require(profile in (None, "go"), "Unsupported repository profile")
@@ -63,7 +87,16 @@ def profiles(inventory, owner):
         name = repo["name"]
         require(re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name) and name not in (".", ".."), "Invalid repository name")
         config = repo.get("bootstrap", {})
-        require(set(config) == {"source_sha", "workflow_sha", "hook_sha", "go_version", "code_owner", "go_module"}, "Go bootstrap requires explicit pins, version, module and owner")
+        common = {"go_version", "code_owner", "go_module"}
+        legacy = {"source_sha", "workflow_sha", "hook_sha"}
+        current = {"source_ref", "workflow_ref", "hook_ref"}
+        require(set(config) in (common | legacy, common | current), "Provide exactly source_ref/workflow_ref/hook_ref (or legacy SHA fields); do not mix aliases")
+        refs = {name: config[name + ("_ref" if set(config) == common | current else "_sha")] for name in ("source", "workflow", "hook")}
+        if set(config) == common | legacy:
+            require(all(isinstance(value, str) and SHA.fullmatch(value) for value in refs.values()), "Legacy _sha fields accept full SHAs only")
+        resolved = {name + "_sha": resolve_reference(api, "tyler180/github-module" if name == "source" else "tyler180/github-workflows", ref) for name, ref in refs.items()}
+        repo["bootstrap"] = config = {**{name: config[name] for name in common}, **resolved}
+        repo["_bootstrap_refs"] = {name + "_ref": value for name, value in refs.items()}
         require(config["source_sha"] == SOURCE_SHA, "Starter source is not approved by this automation version")
         require(config["workflow_sha"] == TOOLING_SHA and config["hook_sha"] == TOOLING_SHA, "Workflow and hook pins are not approved by this automation version")
         require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", config["go_version"]), "Explicit Go patch version required")
@@ -121,13 +154,15 @@ def bootstrap(api, owner, key, repo, files, source_run):
     require(actual["full_name"].lower() == f"{owner}/{repo['name']}".lower() and actual["private"] is True and actual["default_branch"] == "main" and not actual["archived"], "Destination identity/settings mismatch")
     fingerprint = hashlib.sha256(canonical({"repository_id": actual["id"], "profile": "go", "config": repo["bootstrap"],
         "files": {path: {"sha256": hashlib.sha256(value["content"]).hexdigest(), "mode": value["mode"]} for path, value in files.items()}})).hexdigest()
+    provenance = {"requested_refs": repo.get("_bootstrap_refs", {}),
+                  "resolved_refs": {name: repo["bootstrap"][name] for name in ("source_sha", "workflow_sha", "hook_sha")}}
     main = api.call("GET", prefix + "git/ref/heads/main")["object"]["sha"]
     marker_bytes = content(api, prefix, MARKER, main)
     if marker_bytes is not None:
         marker = json.loads(marker_bytes)
         require(marker.get("repository_id") == actual["id"] and marker.get("fingerprint") == fingerprint, "Existing bootstrap differs; use a reviewed upgrade PR")
         print(f"{actual['full_name']}: already bootstrapped; application files preserved")
-        return {"repository": actual["full_name"], "status": "already-bootstrapped", "commit": main}
+        return {"repository": actual["full_name"], "status": "already-bootstrapped", "commit": main, **provenance}
     base_tree = tree(api, prefix, main)
     require(set(base_tree) == {"README.md"}, "Refusing bootstrap: repository already contains application files")
     expected_readme = f"# {repo['name']}\n{repo.get('description', '')}\n".encode()
@@ -135,7 +170,7 @@ def bootstrap(api, owner, key, repo, files, source_run):
     ref = api.call("GET", prefix + "git/ref/heads/" + BRANCH, missing=True)
     marker = {"schema_version": 1, "repository_id": actual["id"], "inventory_key": key, "profile": "go",
         "fingerprint": fingerprint, "source_sha": SOURCE_SHA, "tooling_sha": TOOLING_SHA,
-        "base_sha": main, "source_run": source_run}
+        "base_sha": main, "source_run": source_run, **provenance}
     if ref is None:
         files = {**files, MARKER: {"content": json.dumps(marker, indent=2, sort_keys=True).encode() + b"\n", "mode": "100644"}}
         entries = []
@@ -163,12 +198,12 @@ def bootstrap(api, owner, key, repo, files, source_run):
     if not open_prs:
         require(not prs, "Bootstrap PR was closed; do not reopen without review")
         pr = api.call("POST", prefix + "pulls", {"title": "Bootstrap Go repository profile", "head": BRANCH, "base": "main",
-            "body": f"Adds Go source, pinned shared CI, CODEOWNERS, and local pre-commit hooks.\n\nSource: tyler180/github-module@{SOURCE_SHA}\nShared tooling: tyler180/github-workflows@{TOOLING_SHA}\nBootstrap fingerprint: {fingerprint}\nRun: {source_run}\n\nReview and merge after CI succeeds. Developers run `pre-commit install` locally. Protection and access stages are unchanged."})
+            "body": f"Adds Go source, pinned shared CI, CODEOWNERS, and local pre-commit hooks.\n\nRequested references: {json.dumps(repo.get('_bootstrap_refs', {}), sort_keys=True)}\nSource: tyler180/github-module@{SOURCE_SHA}\nShared tooling: tyler180/github-workflows@{TOOLING_SHA}\nBootstrap fingerprint: {fingerprint}\nRun: {source_run}\n\nReview and merge after CI succeeds. Developers run `pre-commit install` locally. Protection and access stages are unchanged."})
     else:
         pr = open_prs[0]
         require(pr["head"]["sha"] == head, "PR head differs from verified bootstrap branch")
     print(pr["html_url"])
-    return {"repository": actual["full_name"], "status": "pr-open", "pr_url": pr["html_url"], "head_sha": head}
+    return {"repository": actual["full_name"], "status": "pr-open", "pr_url": pr["html_url"], "head_sha": head, **provenance}
 
 
 def main():
@@ -183,7 +218,7 @@ def main():
     inventory = json.loads(args.inventory.read_text())
     results = []
     # Validate every selected profile before any remote mutation.
-    selected = profiles(inventory, args.owner)
+    selected = profiles(inventory, args.owner, api)
     with tempfile.TemporaryDirectory() as directory:
         prepared = [(key, repo, render(args.source, repo["bootstrap"], Path(directory) / key)) for key, repo in selected]
         for key, repo, files in prepared:

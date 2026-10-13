@@ -142,7 +142,8 @@ def bootstrap(api, owner, key, repo, files, source_run):
         for path, value in files.items():
             blob = api.call("POST", prefix + "git/blobs", {"content": base64.b64encode(value["content"]).decode(), "encoding": "base64"})
             entries.append({"path": path, "mode": value["mode"], "type": "blob", "sha": blob["sha"]})
-        new_tree = api.call("POST", prefix + "git/trees", {"base_tree": main, "tree": entries})
+        base_commit = api.call("GET", prefix + "git/commits/" + main)
+        new_tree = api.call("POST", prefix + "git/trees", {"base_tree": base_commit["tree"]["sha"], "tree": entries})
         commit = api.call("POST", prefix + "git/commits", {"message": "Bootstrap Go profile from approved source", "tree": new_tree["sha"], "parents": [main]})
         require(api.call("GET", prefix + "git/ref/heads/main")["object"]["sha"] == main, "Default branch changed during bootstrap; retry")
         api.call("POST", prefix + "git/refs", {"ref": "refs/heads/" + BRANCH, "sha": commit["sha"]})

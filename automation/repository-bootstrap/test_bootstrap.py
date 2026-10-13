@@ -45,7 +45,10 @@ class FakeAPI:
             sha = b.git_blob(content)
             self.blobs[sha] = content
             return {"sha": sha}
+        if tail.startswith("git/commits/"):
+            return {"tree": {"sha": "base-tree"}}
         if tail == "git/trees":
+            assert body['base_tree'] == 'base-tree'
             self.trees["tree"] = body["tree"]
             return {"sha": "tree"}
         if tail == "git/commits":

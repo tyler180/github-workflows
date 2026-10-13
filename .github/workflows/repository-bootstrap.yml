@@ -2,9 +2,14 @@ name: Bootstrap repository profiles through reviewed PRs
 on:
   workflow_call:
     inputs:
-      automation-sha:
+      automation-ref:
+        description: Exact immutable release version or full commit SHA.
         type: string
-        required: true
+        required: false
+      automation-sha:
+        description: Legacy SHA-only alias; do not combine with automation-ref.
+        type: string
+        required: false
     secrets:
       TF_GITHUB_BOOTSTRAP_TOKEN:
         required: false
@@ -30,25 +35,41 @@ jobs:
           persist-credentials: false
       - name: Validate approved automation pin
         env:
-          AUTOMATION_SHA: ${{ inputs.automation-sha }}
-        run: '[[ "$AUTOMATION_SHA" =~ ^[0-9a-f]{40}$ ]]'
+          AUTOMATION_REF: ${{ inputs.automation-ref }}
+          LEGACY_SHA: ${{ inputs.automation-sha }}
+        run: |
+          set -euo pipefail
+          test -z "$AUTOMATION_REF" || test -z "$LEGACY_SHA"
+          if test -n "$LEGACY_SHA"; then
+            [[ "$LEGACY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          else
+            [[ "$AUTOMATION_REF" =~ ^([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?)$ ]]
+          fi
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: tyler180/github-workflows
-          ref: ${{ inputs.automation-sha }}
+          ref: ${{ inputs.automation-ref || inputs.automation-sha }}
           path: automation
           persist-credentials: false
+      - name: Verify immutable bootstrap automation release
+        id: automation-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATION_REF: ${{ inputs.automation-ref || inputs.automation-sha }}
+        run: |
+          python3 -I automation/automation/repository-policy/release_ref.py \
+            --ref "$AUTOMATION_REF" --checkout automation --output "$GITHUB_OUTPUT"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: tyler180/github-module
-          ref: 6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32
+          ref: v0.1.0-rc.3
           path: starter
           persist-credentials: false
       - name: Open or reuse Go bootstrap PRs
         env:
           GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
-          AUTOMATION_SHA: ${{ inputs.automation-sha }}
+          AUTOMATION_SHA: ${{ steps.automation-version.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail

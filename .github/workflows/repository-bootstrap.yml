@@ -1,0 +1,102 @@
+name: Bootstrap repository profiles through reviewed PRs
+on:
+  workflow_call:
+    inputs:
+      automation-sha:
+        type: string
+        required: true
+    secrets:
+      TF_GITHUB_BOOTSTRAP_TOKEN:
+        required: false
+permissions:
+  contents: read
+jobs:
+  bootstrap:
+    if: github.repository == 'tyler180/github-infra' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: production
+    permissions:
+      contents: read
+      id-token: none
+    concurrency:
+      group: github-infra-repository-bootstrap
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: configuration
+          persist-credentials: false
+      - name: Validate approved automation pin
+        env:
+          AUTOMATION_SHA: ${{ inputs.automation-sha }}
+        run: '[[ "$AUTOMATION_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.automation-sha }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-module
+          ref: 6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32
+          path: starter
+          persist-credentials: false
+      - name: Open or reuse Go bootstrap PRs
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          AUTOMATION_SHA: ${{ inputs.automation-sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo 'Missing production TF_GITHUB_BOOTSTRAP_TOKEN (Contents, Workflows and Pull requests write; Administration read).' >&2; exit 1; }
+          test "$(git -C automation rev-parse HEAD)" = "$AUTOMATION_SHA"
+          test "$(gh api repos/tyler180/github-infra/commits/main --jq .sha)" = "$SOURCE_SHA"
+          python3 -I automation/automation/repository-bootstrap/bootstrap.py \
+            --inventory configuration/repositories.json --source starter --owner tyler180 \
+            --run-url "$RUN_URL" --report "$RUNNER_TEMP/bootstrap-report.json"
+      - name: Publish bootstrap result
+        run: |
+          cat "$RUNNER_TEMP/bootstrap-report.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bootstrap-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bootstrap-report.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify bootstrap PR checks
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/bootstrap-report.json" <<'PY'
+          import json
+          import subprocess
+          import sys
+          import time
+
+          for result in json.load(open(sys.argv[1])):
+              if result['status'] != 'pr-open':
+                  continue
+              # Registration may lag PR creation; a successful read with no checks is not evidence.
+              for attempt in range(30):
+                  response = subprocess.run(['gh', 'pr', 'checks', result['pr_url'], '--json', 'name,state'], capture_output=True, text=True)
+                  if response.returncode in (0, 8) and response.stdout.strip():
+                      checks = json.loads(response.stdout)
+                      if checks:
+                          break
+                  time.sleep(5)
+              else:
+                  raise SystemExit('Bootstrap PR has no registered checks; inspect ' + result['pr_url'])
+              subprocess.run(['gh', 'pr', 'checks', result['pr_url'], '--watch', '--fail-fast', '--interval', '10'], check=True)
+              actual = subprocess.check_output(['gh', 'pr', 'view', result['pr_url'], '--json', 'headRefOid', '--jq', '.headRefOid'], text=True).strip()
+              if actual != result['head_sha']:
+                  raise SystemExit('Bootstrap PR changed during validation; review the new head')
+              final = json.loads(subprocess.check_output(['gh', 'pr', 'checks', result['pr_url'], '--json', 'name,state'], text=True))
+              if not any(check['name'].endswith('platform-ci') for check in final) or any(check['state'] != 'SUCCESS' for check in final):
+                  raise SystemExit('Required bootstrap validation did not succeed: ' + result['pr_url'])
+              print('Checks passed for verified bootstrap head: ' + result['pr_url'])
+          PY

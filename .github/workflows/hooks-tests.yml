@@ -1,0 +1,29 @@
+name: Test shared developer hooks
+on:
+  pull_request:
+    paths: [hooks/**, .pre-commit-hooks.yaml, .github/workflows/hooks-tests.yml]
+  push:
+    branches: [main]
+    paths: [hooks/**, .pre-commit-hooks.yaml, .github/workflows/hooks-tests.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s hooks/tests -p 'test_*.py'
+      - name: Download and verify scanner without a PATH installation
+        env:
+          PLATFORM_TOOL_CACHE: ${{ runner.temp }}/platform-tool-cache
+        run: python3 -I hooks/secret_scan.py --install-only
+      - name: Verify clean staged scanning
+        env:
+          PLATFORM_TOOL_CACHE: ${{ runner.temp }}/platform-tool-cache
+        run: python3 -I hooks/secret_scan.py --staged .

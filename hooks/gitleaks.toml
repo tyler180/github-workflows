@@ -1,0 +1,3 @@
+# Central policy: use pinned Gitleaks built-in rules without caller allowlists.
+[extend]
+useDefault = true

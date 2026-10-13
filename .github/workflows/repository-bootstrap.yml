@@ -84,7 +84,9 @@ jobs:
               # Registration may lag PR creation; a successful read with no checks is not evidence.
               for attempt in range(30):
                   response = subprocess.run(['gh', 'pr', 'checks', result['pr_url'], '--json', 'name,state'], capture_output=True, text=True)
-                  if response.returncode in (0, 8) and response.stdout.strip():
+                  if response.returncode not in (0, 8) and "no checks reported" not in response.stderr.lower():
+                      raise SystemExit('Cannot read bootstrap PR checks. Verify Checks and Actions read access for TF_GITHUB_BOOTSTRAP_TOKEN. ' + response.stderr.strip())
+                  if response.stdout.strip():
                       checks = json.loads(response.stdout)
                       if checks:
                           break

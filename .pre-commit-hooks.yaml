@@ -16,3 +16,11 @@
   pass_filenames: false
   always_run: true
   stages: [manual]
+- id: codex-review
+  name: Optional advisory AI review
+  verbose: true
+  entry: hooks/codex_review.py
+  language: script
+  stages: [pre-push]
+  pass_filenames: false
+  always_run: true

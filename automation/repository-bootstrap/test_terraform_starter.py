@@ -29,6 +29,10 @@ class TerraformStarterTests(unittest.TestCase):
     def install(self, run='run/1'):
         return t.install(self.api, 'owner', 'pilot', self.repo, self.files, run)
 
+    def test_selections_accept_exact_release_versions(self):
+        self.repo["terraform_starter"]["workflow_ref"] = "v2.3.0-rc.3"
+        self.assertEqual(len(t.selections({"schema_version": 1, "repositories": {"pilot": self.repo}}, "owner")), 1)
+
     def test_preserves_application_and_terraform(self):
         self.install()
         for name in ('main.go', 'terraform/main.tf', 'README.md'):

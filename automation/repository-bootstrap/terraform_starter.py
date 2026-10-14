@@ -16,8 +16,8 @@ b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 
 # Updated to the reviewed immutable starter release before publishing automation.
-SOURCE_REF = "v0.1.0-rc.5"
-SOURCE_SHA = "617b62433ff61c137ce9e05974d01cee6752f5ec"
+SOURCE_REF = "v0.1.0-rc.6"
+SOURCE_SHA = "2acd39aaa3b6b6272d1566d1d3e3323cfc040e17"
 MARKER = ".platform-terraform-starter.json"
 BRANCH = "automation/terraform-starter"
 FILES = {".github/workflows/terraform-plan.yml", ".github/workflows/terraform-deploy.yml", "TERRAFORM-STARTER.md"}
@@ -37,7 +37,7 @@ def selections(inventory, owner):
         b.require(isinstance(config, dict) and set(config) == {"terraform_version", "workflow_ref", "working_directory"}, "Invalid Terraform starter fields")
         b.require(all(isinstance(value, str) for value in config.values()), "Terraform starter fields must be strings")
         b.require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", config["terraform_version"]), "Explicit Terraform patch version required")
-        b.require(b.SHA.fullmatch(config["workflow_ref"]), "Terraform workflow requires a full reviewed SHA")
+        b.require((b.SHA.fullmatch(config["workflow_ref"]) or b.VERSION.fullmatch(config["workflow_ref"])), "Terraform workflow requires an exact immutable release version or full SHA")
         b.require(re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", config["working_directory"]), "Invalid Terraform directory")
         selected.append((key, repo))
     return selected
@@ -63,6 +63,7 @@ def render(source, config, destination):
 
 
 def install(api, owner, key, repo, files, run_url):
+    workflow_sha = b.resolve_reference(api, "tyler180/github-workflows", repo["terraform_starter"]["workflow_ref"])
     prefix = f"repos/{owner}/{repo['name']}/"
     actual = api.call("GET", prefix.rstrip("/"))
     b.require(actual["full_name"].lower() == f"{owner}/{repo['name']}".lower() and not actual["archived"], "Destination identity mismatch")
@@ -80,7 +81,7 @@ def install(api, owner, key, repo, files, run_url):
     b.require(not (set(files) & set(base_tree)), "Existing Terraform caller filenames conflict; reconcile manually")
     marker = {"schema_version": 1, "repository_id": actual["id"], "inventory_key": key,
         "fingerprint": fingerprint, "source_ref": SOURCE_REF, "source_sha": SOURCE_SHA,
-        "base_sha": main, "source_run": run_url, "config": repo["terraform_starter"]}
+        "workflow_sha": workflow_sha, "base_sha": main, "source_run": run_url, "config": repo["terraform_starter"]}
     prepared = {**files, MARKER: {"content": json.dumps(marker, sort_keys=True, indent=2).encode() + b"\n", "mode": "100644"}}
     ref = api.call("GET", prefix + "git/ref/heads/" + BRANCH, missing=True)
     if ref is None:

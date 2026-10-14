@@ -15,8 +15,8 @@ spec.loader.exec_module(b)
 
 FILE = '.pre-commit-config.yaml'
 SHARED = 'https://github.com/tyler180/github-workflows'
-APPROVED_REF = 'v2.3.0-rc.5'
-APPROVED_SHA = '9bf2bc8f3d14123ea82d5be3e176760517652ca1'
+APPROVED_REF = 'v2.3.0-rc.8'
+APPROVED_SHA = '2cf87d4fcbafc581db730f3298af283056f1e8c1'
 
 
 def selections(inventory, owner):
@@ -58,7 +58,7 @@ def transform(data, config):
         if not matches:
             matches = [{'id': 'codex-review'}]
             hooks.append(matches[0])
-        matches[0].update(stages=['pre-push'], verbose=True)
+        matches[0].update(stages=['pre-commit'], verbose=True)
     else:
         shared['hooks'] = [h for h in hooks if h['id'] != 'codex-review']
     if data is not None and before == json.dumps(document, sort_keys=True):
@@ -107,7 +107,7 @@ def install(api, owner, key, repo, run_url):
         b.require(pr['state'] == 'open' and pr['head']['sha'] == head, 'Hook PR was closed or changed; reconcile manually')
     else:
         pr = api.call('POST', prefix + 'pulls', {'title': 'Update shared developer hooks', 'head': update_branch, 'base': branch,
-            'body': f"Updates only {FILE} from github-infra inventory key {key}. Shared release: {APPROVED_REF} ({APPROVED_SHA}).\n\nPreserves unrelated hooks and application files. YAML formatting/comments may change. Review and merge after CI passes. No automatic merge or local activation.\n\nFor AI review, each developer must approve code submission to their provider, then run `pre-commit install --hook-type pre-push` and `git config --local hooks.aiReview true`. AI review stays advisory.\n\nRun: {run_url}"})
+            'body': f"Updates only {FILE} from github-infra inventory key {key}. Shared release: {APPROVED_REF} ({APPROVED_SHA}).\n\nPreserves unrelated hooks and application files. YAML formatting/comments may change. Review and merge after CI passes. No automatic merge or local activation.\n\nFor AI review, each developer must approve code submission to their provider, then run `pre-commit install --hook-type pre-commit` and `git config --local hooks.aiReview true`. AI review stays advisory.\n\nRun: {run_url}"})
     return {'repository': actual['full_name'], 'status': 'pr-open', 'pr_url': pr['html_url'], 'head_sha': head}
 
 

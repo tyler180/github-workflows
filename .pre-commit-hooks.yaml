@@ -21,6 +21,6 @@
   verbose: true
   entry: hooks/codex_review.py
   language: script
-  stages: [pre-push]
+  stages: [pre-commit]
   pass_filenames: false
   always_run: true

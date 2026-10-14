@@ -16,8 +16,8 @@ b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 
 # Updated to the reviewed immutable starter release before publishing automation.
-SOURCE_REF = "v0.1.0-rc.4"
-SOURCE_SHA = "83b144ac485786c842259d84596b090368e0ec76"
+SOURCE_REF = "v0.1.0-rc.5"
+SOURCE_SHA = "617b62433ff61c137ce9e05974d01cee6752f5ec"
 MARKER = ".platform-terraform-starter.json"
 BRANCH = "automation/terraform-starter"
 FILES = {".github/workflows/terraform-plan.yml", ".github/workflows/terraform-deploy.yml", "TERRAFORM-STARTER.md"}

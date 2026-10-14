@@ -4,7 +4,7 @@
 
 `repository-terraform-starter.yml` installs the disabled application plan/deploy
 callers selected by `terraform_starter` inventory metadata. It uses immutable module
-release `v0.1.0-rc.4`, opens an additive PR for existing or newly bootstrapped repos,
+release `v0.1.0-rc.5`, opens an additive PR for existing or newly bootstrapped repos,
 and preserves their source, application CI, hooks and Terraform. Repeated runs reuse
 the PR; filename collisions, edited callers/branches, rejected PRs and unaccepted
 adoption entries fail for manual review. The workflow uses the existing production
@@ -52,3 +52,17 @@ Commit `.terraform.lock.hcl` in callers for reproducible provider selection. Pin
 ## Validation
 
 Run `actionlint` against both reusable workflows and the caller. Run `terraform fmt -check -recursive` and `terraform init -backend=false` followed by `terraform validate` in the caller. Live planning additionally verifies OIDC trust, backend access and provider credentials. Local YAML/shell checks do not establish those permissions. Never run an apply merely to test the pipeline.
+
+## ECR authentication across saved plans
+
+Set repository variable `TERRAFORM_ECR_REGISTRY` to the account registry address
+when Terraform builds/pushes ECR images. Each plan/apply job logs Docker in after
+assuming its own AWS role. Configure the Docker provider with `registry_auth`
+`address` and `config_file = pathexpand("~/.docker/config.json")`; the provider
+reads the runtime file independently in each job. Do not put a plan-time
+`aws_ecr_authorization_token` password or file contents in provider configuration:
+a saved plan can otherwise replay the plan role's credential during apply.
+Credentials stay outside the Terraform working-directory bundle.
+
+After a partial apply, run the entire workflow with a fresh plan; do not rerun
+only the apply job using the stale pre-apply plan.

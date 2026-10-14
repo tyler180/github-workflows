@@ -1,5 +1,7 @@
 import copy
 import unittest
+import subprocess
+import sys
 from unittest.mock import patch
 import yaml
 import managed_hooks as h
@@ -17,6 +19,11 @@ class HookTests(unittest.TestCase):
 
     def install(self):
         return h.install(self.api, 'owner', 'pilot', self.repo, 'run/1')
+
+    def test_isolated_cli_matches_workflow_invocation(self):
+        result = subprocess.run([sys.executable, "-I", h.__file__, "--help"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--inventory", result.stdout)
 
     def test_preserves_application_and_retry_reuses_pr(self):
         first = self.install()

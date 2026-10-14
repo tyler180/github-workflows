@@ -2,13 +2,16 @@
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import urllib.parse
 import yaml
-import bootstrap as b
+spec = importlib.util.spec_from_file_location("bootstrap", Path(__file__).with_name("bootstrap.py"))
+b = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(b)
 
 FILE = '.pre-commit-config.yaml'
 SHARED = 'https://github.com/tyler180/github-workflows'

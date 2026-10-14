@@ -51,67 +51,47 @@ actionlint .github/workflows/validate-gitops-release.yaml .github/workflows/reus
 
 Install PyYAML 6.0.3 in a temporary environment. Tests cover patch selection, retry tag reuse, stale-commit rejection, onboarding, configuration preservation, and agreement between tested helpers and embedded workflow code. Keep embedded helpers in sync with `automation/promote.py` and `automation/release_version.py`. These local checks do not prove GitHub App permissions, registry visibility, or live Argo readiness.
 
-## Optional AI review before pushing
+## Optional AI review before committing
 
-The `codex-review` pre-commit hook provides advisory feedback on the committed
-changes between the branch's locally recorded upstream and HEAD. It is disabled
-until each developer explicitly opts in. Tests, linters and secret scanning
-remain required independently; AI findings never approve or block a push.
+The `codex-review` hook reviews the staged Git diff during `git commit`. It does
+not include unstaged changes and works on new branches and initial commits.
+The hook is advisory: findings and outages do not block commits. You can edit
+and amend your commit before pushing. A successful review is not test evidence.
 
-Install and authenticate Codex CLI first. This implementation was checked against
-CLI 0.162.1 and requires `--ignore-user-config`, `--ignore-rules` and `--ephemeral`.
-It uses the CLI default model, or `--model` for manual runs. Authentication uses
-your existing Codex login or API key, and reviews consume that account's usage.
-See the [official non-interactive documentation](https://developers.openai.com/codex/noninteractive).
-
-Add this hook to your consuming repository's existing pre-commit configuration
-under its pinned `github-workflows` revision:
-
-```yaml
-- id: codex-review
-  stages: [pre-push]
-  verbose: true
-```
-
-Then, in that repository:
+Install/authenticate Codex CLI, then add `codex-review` under the pinned shared
+hook release in your pre-commit configuration with `stages: [pre-commit]` and
+`verbose: true`. In the consuming repository, run:
 
 ```sh
-pre-commit install --hook-type pre-push
+pre-commit install --hook-type pre-commit
 git config --local hooks.aiReview true
 ```
 
-Disable it with `git config --local hooks.aiReview false`. Keep `verbose: true`
-to see advisory findings even when the hook succeeds. This does not install or
-replace any hooks automatically. A published version containing this addition
-will be needed before consuming repositories can reference it remotely.
+Local opt-in persists; disable with `git config --local hooks.aiReview false`.
+Reviews consume your account usage and submit the staged diff to your model
+provider. Only enable after approving that submission. Run secret scanning
+before AI review. CLI 0.162.1 was checked; required options include
+`--ignore-user-config`, `--ignore-rules` and `--ephemeral`.
 
-For a manual review, run from the application repository:
+Manual staged review, from the consuming repository:
 
 ```sh
-python3 /path/to/github-workflows/scripts/codex-review.py --base origin/main
+python3 /path/to/github-workflows/scripts/codex-review.py --staged
 ```
 
-The comparison is the selected commit directly against HEAD, not a merge-base
-comparison. No fetch occurs. Refresh the upstream yourself when appropriate.
-New branches without an upstream need a manual `--base`; the hook reports review
-unavailability and allows the push. The hook reviews the current HEAD branch,
-so use manual review for pushes of other refs or multiple branches.
+Manual committed review remains available with `--base origin/main`. It compares
+that commit directly to HEAD and does not fetch. Each review runs outside the
+checkout with user configuration/MCP disabled, a read-only sandbox and no
+approval escalation. The prompt treats diff text as untrusted. Sandbox read
+access is not a guarantee of diff-only access. Ephemeral mode avoids saved CLI
+sessions, not provider retention. The configured CLI default model is used;
+manual runs accept `--model`.
 
-Only the committed diff is supplied. Uncommitted files and repository context
-are excluded. Review runs from an empty temporary directory with user config,
-policy rules and MCP configuration disabled, using a read-only sandbox and no
-approval escalation. The prompt treats diff text as untrusted. This reduces
-exposure but does not make sandbox read access a guarantee of diff-only access.
-Only enable this for code approved for submission to your configured model
-provider. Scan for secrets before requesting review; this script is not a secret
-filter. Ephemeral mode avoids saved CLI sessions, not provider-side retention.
-
-Diffs over 200 KB are skipped in full. Reviews time out after 180 seconds; manual
-runs accept `--timeout` from 1 to 600. Missing CLI, authentication failures and
-outages report unavailable feedback. Manual runs return 2 on operational failure;
-the hook returns success so these failures cannot block development. A successful
-run is never evidence that the change is safe. No PR comments, CI integration,
-release publication or consumer activation is included in this addition.
+Diffs over 200 KB are skipped in full. Reviews time out after 180 seconds;
+manual `--timeout` accepts 1 to 600. Operational failures return 2 manually and
+success in hook mode with an unavailable-review message. Tests, linting and
+secret scanning remain independent. See the
+[official non-interactive documentation](https://developers.openai.com/codex/noninteractive).
 
 ## Managed repository hook updates
 

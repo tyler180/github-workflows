@@ -61,6 +61,27 @@ class ReviewTests(unittest.TestCase):
                 review.review('main', 1)
             kill.assert_called_once_with(123, review.signal.SIGKILL)
 
+    def test_staged_review_excludes_unstaged_edits_and_needs_no_upstream(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.run(['git', '-C', directory, *args], check=True, capture_output=True).stdout
+            git('init')
+            path = Path(directory, 'sample.txt')
+            path.write_text('staged content\n')
+            git('add', 'sample.txt')
+            path.write_text('unstaged content\n')
+            # Also covers an initial commit, where HEAD does not yet exist.
+            with patch.object(review, 'git', side_effect=git), patch.object(review, 'run_review') as run:
+                review.review(None, 10, staged=True)
+                diff = run.call_args.args[0]
+                self.assertIn(b'+staged content', diff)
+                self.assertNotIn(b'unstaged content', diff)
+
+    def test_staged_flag_selects_index(self):
+        with patch.object(review, 'git', return_value=b'true'), patch.object(review, 'review') as run:
+            self.assertEqual(review.main(['--hook', '--staged']), 0)
+            self.assertTrue(run.call_args.kwargs['staged'])
+
     def test_real_git_revision_resolution_and_diff(self):
         with tempfile.TemporaryDirectory() as directory:
             run_git = subprocess.run

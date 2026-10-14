@@ -1,0 +1,90 @@
+name: Install opt-in Terraform starter callers through reviewed PRs
+on:
+  workflow_call:
+    inputs:
+      automation-ref:
+        description: Exact immutable release version or full commit SHA.
+        type: string
+        required: false
+      automation-sha:
+        description: Legacy SHA-only alias; do not combine with automation-ref.
+        type: string
+        required: false
+    secrets:
+      TF_GITHUB_BOOTSTRAP_TOKEN:
+        required: false
+permissions:
+  contents: read
+jobs:
+  bootstrap:
+    if: github.repository == 'tyler180/github-infra' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    environment: production
+    permissions:
+      contents: read
+      id-token: none
+    concurrency:
+      group: github-infra-terraform-starter
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: configuration
+          persist-credentials: false
+      - name: Validate approved automation pin
+        env:
+          AUTOMATION_REF: ${{ inputs.automation-ref }}
+          LEGACY_SHA: ${{ inputs.automation-sha }}
+        run: |
+          set -euo pipefail
+          test -z "$AUTOMATION_REF" || test -z "$LEGACY_SHA"
+          if test -n "$LEGACY_SHA"; then
+            [[ "$LEGACY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          else
+            [[ "$AUTOMATION_REF" =~ ^([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?)$ ]]
+          fi
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.automation-ref || inputs.automation-sha }}
+          path: automation
+          persist-credentials: false
+      - name: Verify immutable bootstrap automation release
+        id: automation-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATION_REF: ${{ inputs.automation-ref || inputs.automation-sha }}
+        run: |
+          python3 -I automation/automation/repository-policy/release_ref.py \
+            --ref "$AUTOMATION_REF" --checkout automation --output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-module
+          ref: v0.1.0-rc.4
+          path: starter
+          persist-credentials: false
+      - name: Open or reuse additive Terraform starter PRs
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          AUTOMATION_SHA: ${{ steps.automation-version.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo 'Missing production TF_GITHUB_BOOTSTRAP_TOKEN (Contents, Workflows and Pull requests write; Administration read).' >&2; exit 1; }
+          test "$(git -C automation rev-parse HEAD)" = "$AUTOMATION_SHA"
+          test "$(gh api repos/tyler180/github-infra/commits/main --jq .sha)" = "$SOURCE_SHA"
+          python3 -I automation/automation/repository-bootstrap/terraform_starter.py \
+            --inventory configuration/repositories.json --source starter --owner tyler180 \
+            --run-url "$RUN_URL" --report "$RUNNER_TEMP/terraform-starter-report.json"
+      - name: Publish bootstrap result
+        run: |
+          cat "$RUNNER_TEMP/terraform-starter-report.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: terraform-starter-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/terraform-starter-report.json
+          if-no-files-found: error
+          retention-days: 30

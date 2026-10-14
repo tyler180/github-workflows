@@ -52,7 +52,7 @@ class HookTests(unittest.TestCase):
         result = yaml.safe_load(h.transform(data, self.config))
         self.assertEqual(result['default_stages'], ['pre-commit'])
         self.assertEqual(result['repos'][0], yaml.safe_load(data)['repos'][0])
-        self.assertEqual(result['repos'][1]['hooks'][-1]['stages'], ['pre-push'])
+        self.assertEqual(result['repos'][1]['hooks'][-1]['stages'], ['pre-commit'])
 
     def test_existing_ai_config_is_byte_identical_noop(self):
         data = h.transform(None, self.config)

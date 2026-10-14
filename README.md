@@ -101,7 +101,7 @@ from github-infra inventory and opens reviewed PRs that update only
 repositories without rerunning bootstrap. Example inventory field:
 
 ```json
-"developer_hooks": {"hook_ref": "v2.3.0-rc.5", "ai_review": true}
+"developer_hooks": {"hook_ref": "v2.3.0-rc.8", "ai_review": true}
 ```
 
 The approved immutable hook release resolves to a verified commit. Existing

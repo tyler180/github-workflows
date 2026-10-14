@@ -112,3 +112,26 @@ outages report unavailable feedback. Manual runs return 2 on operational failure
 the hook returns success so these failures cannot block development. A successful
 run is never evidence that the change is safe. No PR comments, CI integration,
 release publication or consumer activation is included in this addition.
+
+## Managed repository hook updates
+
+The reusable `repository-developer-hooks.yml` workflow reads `developer_hooks`
+from github-infra inventory and opens reviewed PRs that update only
+`.pre-commit-config.yaml`. It works with existing applications and generic
+repositories without rerunning bootstrap. Example inventory field:
+
+```json
+"developer_hooks": {"hook_ref": "v2.3.0-rc.5", "ai_review": true}
+```
+
+The approved immutable hook release resolves to a verified commit. Existing
+unrelated hooks and top-level configuration are preserved semantically; YAML
+comments/formatting may change. Already-current configurations are untouched.
+Retries reuse the exact PR and reject edited branches or closed PRs. Each new
+base/config combination gets its own branch; obsolete PRs need manual closure.
+Adoption-stage repositories and archived/fork destinations are rejected.
+
+This workflow never merges PRs, alters application code, applies Terraform,
+installs local hooks, or approves model access. Developers still explicitly
+install pre-push hooks and opt in locally after approving code submission.
+Setting `ai_review` false removes just the shared AI hook.

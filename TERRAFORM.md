@@ -1,5 +1,22 @@
 # Reusable Terraform workflows
 
+## Opt-in application Terraform starters
+
+`repository-terraform-starter.yml` installs the disabled application plan/deploy
+callers selected by `terraform_starter` inventory metadata. It uses immutable module
+release `v0.1.0-rc.4`, opens an additive PR for existing or newly bootstrapped repos,
+and preserves their source, application CI, hooks and Terraform. Repeated runs reuse
+the PR; filename collisions, edited callers/branches, rejected PRs and unaccepted
+adoption entries fail for manual review. The workflow uses the existing production
+bootstrap credential and has no cloud credentials or apply step.
+
+Metadata fields are `terraform_version` (explicit patch), `workflow_ref` (reviewed
+full shared plan/deploy SHA), and `working_directory` (relative directory). Rendering
+does not enable deployment: configure OIDC, remote state, a protected environment
+and the documented repository variables before enabling plans/manual deployment.
+Repositories with multi-repo build contexts or application secret inputs require
+a separate compatibility migration; do not install duplicate active apply routes.
+
 `terraform-plan.yml` runs fmt, init, validate and a preview plan on same-repository pull requests. Fork PRs are skipped; do not use `pull_request_target` to execute submitted Terraform with credentials. Same-repository contributors able to change Terraform must also be trusted with the plan role and provider credentials.
 
 `terraform-deploy.yml` accepts default-branch push or manual runs. It creates a fresh saved plan, archives the complete initialized working directory, then applies that bundle in a separate environment-protected job. No changes means no apply job. The artifact is scoped to the run and planning attempt, retained for one day, and includes provider/module selections. Failed-job reruns reuse the planning job's artifact output. If it expires, rerun the entire workflow to create and approve a fresh plan.

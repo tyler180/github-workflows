@@ -4,7 +4,7 @@
 or by the consuming root's manual resume workflow for already created repositories.
 It opens reviewed source PRs; it never merges or changes rulesets/access/state.
 
-Only `profile: "go"` with basic/private/main initialization is supported. No profile
+Only `profile: "go"` with basic initialization, private or public visibility, and main as the default branch is supported. No profile
 means no source automation. The inventory must explicitly supply source, workflow
 and hook SHAs, Go patch version, module path and authorized code owner. This version
 approves github-module `6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32` and shared tooling

@@ -102,7 +102,7 @@ def profiles(inventory, owner, api=None):
         require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", config["go_version"]), "Explicit Go patch version required")
         require(config["go_module"] == f"github.com/{owner}/{name}", "Go module must match destination repository")
         require(re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?", config["code_owner"]), "Invalid code owner")
-        require(repo.get("visibility", "private") == "private", "Pilot bootstrap requires a private repository")
+        require(repo.get("visibility", "private") in ("private", "public"), "Go bootstrap requires private or public visibility")
         require(repo.get("default_branch") == "main", "Pilot bootstrap requires main")
         result.append((key, repo))
     return result
@@ -151,7 +151,10 @@ def tree(api, prefix, sha):
 def bootstrap(api, owner, key, repo, files, source_run):
     prefix = f"repos/{owner}/{repo['name']}/"
     actual = api.call("GET", prefix.rstrip("/"))
-    require(actual["full_name"].lower() == f"{owner}/{repo['name']}".lower() and actual["private"] is True and actual["default_branch"] == "main" and not actual["archived"], "Destination identity/settings mismatch")
+    visibility = repo.get("visibility", "private")
+    require(visibility in ("private", "public"), "Go bootstrap requires private or public visibility")
+    require(actual.get("visibility") == visibility and actual.get("private") is (visibility == "private"), "Destination visibility differs from inventory")
+    require(actual["full_name"].lower() == f"{owner}/{repo['name']}".lower() and actual["default_branch"] == "main" and not actual["archived"], "Destination identity/settings mismatch")
     fingerprint = hashlib.sha256(canonical({"repository_id": actual["id"], "profile": "go", "config": repo["bootstrap"],
         "files": {path: {"sha256": hashlib.sha256(value["content"]).hexdigest(), "mode": value["mode"]} for path, value in files.items()}})).hexdigest()
     provenance = {"requested_refs": repo.get("_bootstrap_refs", {}),

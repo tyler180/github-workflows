@@ -33,6 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   propose:
+    environment: production
     if: github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 15

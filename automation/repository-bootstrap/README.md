@@ -54,6 +54,15 @@ Rendering uses resolved SHAs so generated source and the bootstrap fingerprint d
 not change when an equivalent release label replaces a SHA. New bootstrap markers
 and every run report record both requested refs and resolved source/workflow/hook
 SHAs. Existing markers/application files are not rewritten solely to add labels.
-The approved starter commit currently has no release; keep its SHA until a reviewed
-immutable release exists. The existing workflow/hook release v2.2.0-rc.1 is verified
-at runtime. Publishing releases is separate from validating/bootstrap execution.
+All named releases are verified immutable at runtime. Publishing releases is
+separate from validating/bootstrap execution.
+
+## Go command-layout starter promotion
+
+New profiles may use github-module v0.1.0-rc.7 with workflow/hook release
+v2.3.0-rc.10. The original v0.1.0-rc.3 and v2.2.0-rc.1 tuple remains
+approved for existing repositories. The job checks out both exact sources and
+renders each selected profile with its approved source. Legacy rendering and
+bootstrap fingerprints remain unchanged; do not advance existing profile pins
+as a source upgrade. Use the separate Go configuration PR workflow for existing
+applications. New markers report the actual selected source and tooling commits.

@@ -81,6 +81,34 @@ class BootstrapTests(unittest.TestCase):
     def run_bootstrap(self):
         return b.bootstrap(self.api, "owner", "pilot", self.repo, self.files, "https://github.com/owner/infra/actions/runs/1")
 
+    def test_legacy_profile_keeps_selected_source_and_provenance(self):
+        self.repo['bootstrap'].update(source_sha=b.LEGACY_SOURCE_SHA,
+                                      workflow_sha=b.LEGACY_TOOLING_SHA,
+                                      hook_sha=b.LEGACY_TOOLING_SHA)
+        b.profiles({'schema_version': 1, 'repositories': {'pilot': self.repo}}, 'owner')
+        self.run_bootstrap()
+        marker = json.loads(self.api.files['head'][b.MARKER])
+        self.assertEqual(marker['source_sha'], b.LEGACY_SOURCE_SHA)
+        self.assertEqual(marker['tooling_sha'], b.LEGACY_TOOLING_SHA)
+        self.api.refs['main'] = 'head'
+        writes = len(self.api.writes)
+        self.assertEqual(self.run_bootstrap()['status'], 'already-bootstrapped')
+        self.assertEqual(len(self.api.writes), writes)
+
+    def test_source_selection_requires_exact_legacy_checkout(self):
+        self.assertEqual(b.source_for({'source_sha': b.SOURCE_SHA}, 'new', 'old'), 'new')
+        self.assertEqual(b.source_for({'source_sha': b.LEGACY_SOURCE_SHA}, 'new', 'old'), 'old')
+        with self.assertRaisesRegex(ValueError, 'legacy-source'):
+            b.source_for({'source_sha': b.LEGACY_SOURCE_SHA}, 'new', None)
+
+    def test_source_and_tooling_generations_cannot_be_mixed(self):
+        for source, tooling in ((b.SOURCE_SHA, b.LEGACY_TOOLING_SHA),
+                                (b.LEGACY_SOURCE_SHA, b.TOOLING_SHA)):
+            repo = repository()
+            repo['bootstrap'].update(source_sha=source, workflow_sha=tooling, hook_sha=tooling)
+            with self.assertRaisesRegex(ValueError, 'not approved'):
+                b.profiles({'schema_version': 1, 'repositories': {'pilot': repo}}, 'owner')
+
     def test_public_profile_and_bootstrap_are_supported(self):
         self.repo['visibility'] = self.api.visibility = 'public'
         profiles = b.profiles({'schema_version': 1, 'repositories': {'pilot': self.repo}}, 'owner')

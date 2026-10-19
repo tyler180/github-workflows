@@ -52,7 +52,7 @@ or AI. Re-running with the same selection produces the same files.
 ## Reviewed configuration PR
 
 `repository-go-configure.yml` is a reusable workflow for a manual caller on its
-default branch. It checks out the target repository's default branch under the
+default branch in the protected `production` environment. It checks out the target repository's default branch under the
 caller's owner, verifies the reviewed tooling SHA/immutable release, configures
 and builds, then opens a PR on `codex/configure-go-main`. It never merges or
 replaces an existing proposal branch. Target source must already be present.

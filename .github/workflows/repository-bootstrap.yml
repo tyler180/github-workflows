@@ -62,8 +62,14 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: tyler180/github-module
-          ref: v0.1.0-rc.3
+          ref: v0.1.0-rc.7
           path: starter
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-module
+          ref: v0.1.0-rc.3
+          path: starter-legacy
           persist-credentials: false
       - name: Open or reuse Go bootstrap PRs
         env:
@@ -77,7 +83,7 @@ jobs:
           test "$(git -C automation rev-parse HEAD)" = "$AUTOMATION_SHA"
           test "$(gh api repos/tyler180/github-infra/commits/main --jq .sha)" = "$SOURCE_SHA"
           python3 -I automation/automation/repository-bootstrap/bootstrap.py \
-            --inventory configuration/repositories.json --source starter --owner tyler180 \
+            --inventory configuration/repositories.json --source starter --legacy-source starter-legacy --owner tyler180 \
             --run-url "$RUN_URL" --report "$RUNNER_TEMP/bootstrap-report.json"
       - name: Publish bootstrap result
         run: |

@@ -13,8 +13,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SOURCE_SHA = "6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32"
-TOOLING_SHA = "0ecbb0fcaea1deb8a8617a51d719b821500e873f"
+SOURCE_SHA = "b9c4a58af31b40aad1232ae7f7cb9b49bcc0b51c"
+LEGACY_SOURCE_SHA = "6ec3d0adb8de698830e5a40f5bdb1f7cf6372d32"
+TOOLING_SHA = "e4486c2c255b0f27a7b3ae4b59938dab1f516b4b"
+LEGACY_TOOLING_SHA = "0ecbb0fcaea1deb8a8617a51d719b821500e873f"
 MARKER = ".platform-bootstrap.json"
 BRANCH = "automation/bootstrap-go"
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -97,8 +99,9 @@ def profiles(inventory, owner, api=None):
         resolved = {name + "_sha": resolve_reference(api, "tyler180/github-module" if name == "source" else "tyler180/github-workflows", ref) for name, ref in refs.items()}
         repo["bootstrap"] = config = {**{name: config[name] for name in common}, **resolved}
         repo["_bootstrap_refs"] = {name + "_ref": value for name, value in refs.items()}
-        require(config["source_sha"] == SOURCE_SHA, "Starter source is not approved by this automation version")
-        require(config["workflow_sha"] == TOOLING_SHA and config["hook_sha"] == TOOLING_SHA, "Workflow and hook pins are not approved by this automation version")
+        require(config["source_sha"] in (SOURCE_SHA, LEGACY_SOURCE_SHA), "Starter source is not approved by this automation version")
+        expected_tooling = TOOLING_SHA if config["source_sha"] == SOURCE_SHA else LEGACY_TOOLING_SHA
+        require(config["workflow_sha"] == expected_tooling and config["hook_sha"] == expected_tooling, "Workflow and hook pins are not approved by this automation version")
         require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", config["go_version"]), "Explicit Go patch version required")
         require(config["go_module"] == f"github.com/{owner}/{name}", "Go module must match destination repository")
         require(re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?", config["code_owner"]), "Invalid code owner")
@@ -110,14 +113,16 @@ def profiles(inventory, owner, api=None):
 
 def render(source, config, destination):
     actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    require(actual == SOURCE_SHA, "Starter checkout does not match approved source")
+    require(actual == config["source_sha"] and actual in (SOURCE_SHA, LEGACY_SOURCE_SHA), "Starter checkout does not match approved source")
     subprocess.run(["python3", "-I", str(source / "scripts/render-template.py"),
         "--destination", str(destination), "--code-owner", config["code_owner"],
         "--workflow-ref", config["workflow_sha"], "--hook-ref", config["hook_sha"],
         "--go-version", config["go_version"], "--go-module", config["go_module"]], check=True)
     hooks = destination / ".pre-commit-config.yaml"
-    with hooks.open("a") as stream:
-        stream.write("  - repo: local\n    hooks:\n      - id: go-validation\n        name: Go formatting, vet and race tests\n        entry: bash scripts/validate.sh\n        language: system\n        pass_filenames: false\n        always_run: true\n")
+    # Preserve legacy rendering byte-for-byte so retries keep their fingerprints.
+    if config["source_sha"] == LEGACY_SOURCE_SHA:
+        with hooks.open("a") as stream:
+            stream.write("  - repo: local\n    hooks:\n      - id: go-validation\n        name: Go formatting, vet and race tests\n        entry: bash scripts/validate.sh\n        language: system\n        pass_filenames: false\n        always_run: true\n")
     files = {}
     for path in sorted(destination.rglob("*")):
         require(not path.is_symlink(), "Starter symlinks are forbidden")
@@ -172,7 +177,7 @@ def bootstrap(api, owner, key, repo, files, source_run):
     require(content(api, prefix, "README.md", main) == expected_readme, "Refusing to overwrite a customized README")
     ref = api.call("GET", prefix + "git/ref/heads/" + BRANCH, missing=True)
     marker = {"schema_version": 1, "repository_id": actual["id"], "inventory_key": key, "profile": "go",
-        "fingerprint": fingerprint, "source_sha": SOURCE_SHA, "tooling_sha": TOOLING_SHA,
+        "fingerprint": fingerprint, "source_sha": repo["bootstrap"]["source_sha"], "tooling_sha": repo["bootstrap"]["workflow_sha"],
         "base_sha": main, "source_run": source_run, **provenance}
     if ref is None:
         files = {**files, MARKER: {"content": json.dumps(marker, indent=2, sort_keys=True).encode() + b"\n", "mode": "100644"}}
@@ -201,7 +206,7 @@ def bootstrap(api, owner, key, repo, files, source_run):
     if not open_prs:
         require(not prs, "Bootstrap PR was closed; do not reopen without review")
         pr = api.call("POST", prefix + "pulls", {"title": "Bootstrap Go repository profile", "head": BRANCH, "base": "main",
-            "body": f"Adds Go source, pinned shared CI, CODEOWNERS, and local pre-commit hooks.\n\nRequested references: {json.dumps(repo.get('_bootstrap_refs', {}), sort_keys=True)}\nSource: tyler180/github-module@{SOURCE_SHA}\nShared tooling: tyler180/github-workflows@{TOOLING_SHA}\nBootstrap fingerprint: {fingerprint}\nRun: {source_run}\n\nReview and merge after CI succeeds. Developers run `pre-commit install` locally. Protection and access stages are unchanged."})
+            "body": f"Adds Go source, pinned shared CI, CODEOWNERS, and local pre-commit hooks.\n\nRequested references: {json.dumps(repo.get('_bootstrap_refs', {}), sort_keys=True)}\nSource: tyler180/github-module@{repo['bootstrap']['source_sha']}\nShared tooling: tyler180/github-workflows@{repo['bootstrap']['workflow_sha']}\nBootstrap fingerprint: {fingerprint}\nRun: {source_run}\n\nReview and merge after CI succeeds. Developers run `pre-commit install` locally. Protection and access stages are unchanged."})
     else:
         pr = open_prs[0]
         require(pr["head"]["sha"] == head, "PR head differs from verified bootstrap branch")
@@ -209,10 +214,19 @@ def bootstrap(api, owner, key, repo, files, source_run):
     return {"repository": actual["full_name"], "status": "pr-open", "pr_url": pr["html_url"], "head_sha": head, **provenance}
 
 
+def source_for(config, source, legacy_source):
+    if config["source_sha"] == SOURCE_SHA:
+        return source
+    require(config["source_sha"] == LEGACY_SOURCE_SHA and legacy_source is not None,
+            "Legacy bootstrap profile requires the approved --legacy-source checkout")
+    return legacy_source
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--legacy-source", type=Path, help="reviewed original starter for already-pinned profiles")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--run-url", required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -223,7 +237,7 @@ def main():
     # Validate every selected profile before any remote mutation.
     selected = profiles(inventory, args.owner, api)
     with tempfile.TemporaryDirectory() as directory:
-        prepared = [(key, repo, render(args.source, repo["bootstrap"], Path(directory) / key)) for key, repo in selected]
+        prepared = [(key, repo, render(source_for(repo["bootstrap"], args.source, args.legacy_source), repo["bootstrap"], Path(directory) / key)) for key, repo in selected]
         for key, repo, files in prepared:
             results.append(bootstrap(api, args.owner, key, repo, files, args.run_url))
     args.report.write_text(json.dumps(results, indent=2) + "\n")

@@ -1,0 +1,57 @@
+name: Reusable Go validation pilot
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        type: string
+        required: true
+      tooling-ref:
+        description: Same reviewed github-workflows SHA or immutable release tag used for this workflow call.
+        type: string
+        required: true
+      working-directory:
+        type: string
+        default: '.'
+permissions:
+  contents: read
+jobs:
+  hygiene:
+    uses: ./.github/workflows/repository-hygiene.yml
+    with:
+      tooling-ref: ${{ inputs.tooling-ref }}
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - name: Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if test -n "$unformatted"; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./...
+  gate:
+    name: platform-ci
+    needs: [validate, hygiene]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      RESULT: ${{ needs.validate.result }}
+      HYGIENE_RESULT: ${{ needs.hygiene.result }}
+    steps:
+      - run: test "$RESULT" = success && test "$HYGIENE_RESULT" = success

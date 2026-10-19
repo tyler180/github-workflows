@@ -14,6 +14,7 @@ def repository():
 
 class FakeAPI:
     def __init__(self):
+        self.visibility = "private"
         self.refs = {"main": "base"}
         self.files = {"base": {"README.md": b"# pilot\nPilot.\n"}}
         self.modes = {"base": {"README.md": "100644"}}
@@ -28,7 +29,7 @@ class FakeAPI:
         if method != "GET":
             self.writes.append((method, tail))
         if path == "repos/owner/pilot":
-            return {"full_name": "owner/pilot", "id": 42, "private": True, "default_branch": "main", "archived": False}
+            return {"full_name": "owner/pilot", "id": 42, "visibility": self.visibility, "private": self.visibility == "private", "default_branch": "main", "archived": False}
         if tail.startswith("git/ref/heads/"):
             ref = tail.removeprefix("git/ref/heads/")
             return {"object": {"sha": self.refs[ref]}} if ref in self.refs else None
@@ -79,6 +80,30 @@ class BootstrapTests(unittest.TestCase):
 
     def run_bootstrap(self):
         return b.bootstrap(self.api, "owner", "pilot", self.repo, self.files, "https://github.com/owner/infra/actions/runs/1")
+
+    def test_public_profile_and_bootstrap_are_supported(self):
+        self.repo['visibility'] = self.api.visibility = 'public'
+        profiles = b.profiles({'schema_version': 1, 'repositories': {'pilot': self.repo}}, 'owner')
+        self.assertEqual(profiles[0][1]['visibility'], 'public')
+        first = self.run_bootstrap()
+        self.assertEqual(first['status'], 'pr-open')
+        writes = len(self.api.writes)
+        self.assertEqual(self.run_bootstrap(), first)
+        self.assertEqual(len(self.api.writes), writes)
+
+    def test_visibility_mismatch_rejected_before_writes(self):
+        for intended, observed in [('private', 'public'), ('public', 'private')]:
+            with self.subTest(intended=intended):
+                self.repo['visibility'] = intended
+                self.api.visibility = observed
+                with self.assertRaisesRegex(ValueError, 'visibility differs'):
+                    self.run_bootstrap()
+                self.assertFalse(self.api.writes)
+
+    def test_internal_visibility_is_rejected(self):
+        self.repo['visibility'] = 'internal'
+        with self.assertRaisesRegex(ValueError, 'private or public'):
+            b.profiles({'schema_version': 1, 'repositories': {'pilot': self.repo}}, 'owner')
 
     def test_retry_reuses_pr_and_preserves_executable_mode(self):
         first = self.run_bootstrap()

@@ -115,3 +115,8 @@ This workflow never merges PRs, alters application code, applies Terraform,
 installs local hooks, or approves model access. Developers still explicitly
 install pre-push hooks and opt in locally after approving code submission.
 Setting `ai_review` false removes just the shared AI hook.
+
+## Go application configuration
+
+See [GO-CONFIGURATION.md](GO-CONFIGURATION.md) for executable discovery, optional
+AI selection, local configuration proposals and the reusable source-PR workflow.

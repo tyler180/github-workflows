@@ -1,0 +1,121 @@
+name: Propose Go application configuration
+on:
+  workflow_call:
+    inputs:
+      repository-name:
+        type: string
+        required: true
+      automation-ref:
+        description: Full reviewed github-workflows commit SHA or immutable release.
+        type: string
+        required: true
+      go-version:
+        type: string
+        required: true
+      main-package:
+        type: string
+        default: ''
+      ai:
+        type: boolean
+        default: false
+      model:
+        type: string
+        default: ''
+    secrets:
+      TF_GITHUB_BOOTSTRAP_TOKEN:
+        required: true
+      OPENAI_API_KEY:
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: go-configure-${{ github.repository_owner }}-${{ inputs.repository-name }}
+  cancel-in-progress: false
+jobs:
+  propose:
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate target and options
+        env:
+          TARGET_NAME: ${{ inputs.repository-name }}
+          TOOLING_REF: ${{ inputs.automation-ref }}
+          GO_VERSION: ${{ inputs.go-version }}
+          AI: ${{ inputs.ai }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          python3 -I - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*', os.environ['TARGET_NAME']), 'Invalid repository name'
+          assert re.fullmatch(r'[0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', os.environ['TOOLING_REF']), 'Pin tooling to a full SHA or immutable release'
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', os.environ['GO_VERSION']), 'Pin Go patch version'
+          assert os.environ['AI'] != 'true' or os.environ['MODEL'], 'AI requires an explicit model'
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: tyler180/github-workflows
+          ref: ${{ inputs.automation-ref }}
+          path: tooling
+          persist-credentials: false
+      - name: Verify tooling revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOLING_REF: ${{ inputs.automation-ref }}
+        run: |
+          python3 -I tooling/automation/repository-policy/release_ref.py \
+            --ref "$TOOLING_REF" --checkout tooling --output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.repository-name }}
+          token: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
+          path: application
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - name: Discover, select and build before proposing files
+        env:
+          AI: ${{ inputs.ai }}
+          MODEL: ${{ inputs.model }}
+          MAIN_PACKAGE: ${{ inputs.main-package }}
+          OPENAI_API_KEY: ${{ inputs.ai && secrets.OPENAI_API_KEY || '' }}
+        run: |
+          options=()
+          if test "$AI" = true; then options+=(--ai --model "$MODEL"); fi
+          if test -n "$MAIN_PACKAGE"; then options+=(--main-package "$MAIN_PACKAGE"); fi
+          python3 -I tooling/scripts/configure-go.py --repository application \
+            --write --report "$RUNNER_TEMP/go-configuration.json" "${options[@]}"
+      - name: Open configuration PR
+        working-directory: application
+        env:
+          GH_TOKEN: ${{ secrets.TF_GITHUB_BOOTSTRAP_TOKEN }}
+          TARGET_REPOSITORY: ${{ github.repository_owner }}/${{ inputs.repository-name }}
+        run: |
+          set -euo pipefail
+          git add -- .go-main.mk Makefile
+          if test -f scripts/validate.sh; then git add -- scripts/validate.sh; fi
+          if git diff --cached --quiet; then
+            echo 'Configuration already matches; no PR needed.'
+            exit 0
+          fi
+          branch=codex/configure-go-main
+          if test -n "$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' ls-remote --heads origin "$branch")"; then
+            echo 'Existing configuration branch requires review; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          base=$(gh api "repos/$TARGET_REPOSITORY" --jq .default_branch)
+          git -c core.hooksPath=/dev/null checkout -b "$branch"
+          git -c core.hooksPath=/dev/null -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            -c commit.gpgsign=false commit -m 'Configure Go application entry point'
+          git -c core.hooksPath=/dev/null -c credential.helper= \
+            -c 'credential.helper=!gh auth git-credential' push origin "HEAD:refs/heads/$branch"
+          cat > "$RUNNER_TEMP/go-configuration-pr.md" <<'BODY'
+          Configure the primary Go executable discovered from Go package metadata. The selected executable and all packages built successfully before these files were proposed.
+
+          Review `.go-main.mk` and the Makefile wiring. Any AI selection is advisory; application tests and required CI checks still apply. This PR does not merge automatically.
+          BODY
+          gh pr create --repo "$TARGET_REPOSITORY" --base "$base" --head "$branch" \
+            --title 'Configure Go application entry point' --body-file "$RUNNER_TEMP/go-configuration-pr.md"

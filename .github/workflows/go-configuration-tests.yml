@@ -1,0 +1,31 @@
+name: Test Go application configuration
+on:
+  pull_request:
+    paths:
+      - scripts/configure-go.py
+      - scripts/tests/test_configure_go.py
+      - .github/workflows/*go*.yml
+      - .github/workflows/repository-hygiene.yml
+  push:
+    branches: [main]
+    paths:
+      - scripts/configure-go.py
+      - scripts/tests/test_configure_go.py
+      - .github/workflows/*go*.yml
+      - .github/workflows/repository-hygiene.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - run: python3 -m unittest discover -s scripts/tests -p test_configure_go.py
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/go-configuration-tests.yml .github/workflows/repository-go-configure.yml .github/workflows/go-validate.yml .github/workflows/repository-hygiene.yml

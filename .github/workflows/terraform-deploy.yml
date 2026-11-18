@@ -79,7 +79,7 @@ jobs:
           LOCK_FLAGS: ${{ inputs.plan-lock && '-lock-timeout=5m' || '-lock=false' }}
         run: |
           set +e
-          terraform plan -input=false $LOCK_FLAGS -no-color -detailed-exitcode -out=tfplan
+          terraform plan -input=false "$LOCK_FLAGS" -no-color -detailed-exitcode -out=tfplan
           status=$?
           set -e
           case "$status" in

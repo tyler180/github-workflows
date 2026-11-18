@@ -65,4 +65,4 @@ jobs:
       - name: Plan
         env:
           LOCK_FLAGS: ${{ inputs.lock && '-lock-timeout=5m' || '-lock=false' }}
-        run: terraform plan -input=false $LOCK_FLAGS -no-color
+        run: terraform plan -input=false "$LOCK_FLAGS" -no-color

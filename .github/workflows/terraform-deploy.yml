@@ -21,6 +21,10 @@ on:
       apply-role-arn:
         type: string
         required: true
+      plan-lock:
+        description: Take the state lock in the plan job. Set false when the plan role is read-only and cannot write the lock object. Apply always locks.
+        type: boolean
+        default: true
       environment:
         type: string
         required: true
@@ -80,9 +84,11 @@ jobs:
       - run: terraform validate -no-color
       - name: Create deployment plan
         id: plan
+        env:
+          LOCK_FLAGS: ${{ inputs.plan-lock && '-lock-timeout=5m' || '-lock=false' }}
         run: |
           set +e
-          terraform plan -input=false -lock-timeout=5m -no-color -detailed-exitcode -out=tfplan
+          terraform plan -input=false "$LOCK_FLAGS" -no-color -detailed-exitcode -out=tfplan
           status=$?
           set -e
           case "$status" in

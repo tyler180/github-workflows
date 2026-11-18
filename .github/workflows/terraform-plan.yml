@@ -18,6 +18,10 @@ on:
         description: Unique identifier for this state within the caller repository
         type: string
         required: true
+      lock:
+        description: Take the state lock while planning. Set false when the plan role is read-only and cannot write the lock object.
+        type: boolean
+        default: true
     secrets:
       terraform-github-token:
         description: Optional credential for the Terraform GitHub provider
@@ -59,4 +63,6 @@ jobs:
       - run: terraform init -input=false
       - run: terraform validate -no-color
       - name: Plan
-        run: terraform plan -input=false -lock-timeout=5m -no-color
+        env:
+          LOCK_FLAGS: ${{ inputs.lock && '-lock-timeout=5m' || '-lock=false' }}
+        run: terraform plan -input=false $LOCK_FLAGS -no-color

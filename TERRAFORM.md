@@ -10,7 +10,7 @@ Review the deployment plan in the planning job's logs before approving the envir
 
 Call these workflows at job level with `contents: read` and `id-token: write`. Pin `uses` to a reviewed commit SHA. Checkout resolves the caller's repository at its triggering SHA.
 
-Required inputs: `terraform-version`, `plan-role-arn`, `state-id`. Optional inputs: `working-directory` (default `.`), `aws-region` (default `us-west-2`). Deployment also requires `apply-role-arn` and `environment`.
+Required inputs: `terraform-version`, `plan-role-arn`, `state-id`. Optional inputs: `working-directory` (default `.`), `aws-region` (default `us-west-2`). Deployment also requires `apply-role-arn` and `environment`. Set `lock: false` (plan) or `plan-lock: false` (deploy) to plan with `-lock=false` so the plan role needs no write access to the state lock; the default (`true`) keeps `-lock-timeout=5m`. Apply always locks.
 
 Optional secrets `terraform-github-token` and (deployment only) `apply-terraform-github-token` populate `GITHUB_TOKEN` for the Terraform GitHub provider. Supply appropriate read and write credentials when using that provider; the caller's automatic workflow token is only used for checkout and a branch freshness check.
 
